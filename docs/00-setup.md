@@ -57,7 +57,12 @@ and `-Dschema.registry.url=…` (`SCHEMA_REGISTRY_URL`).
 
 Kafka's own client logging is kept at WARN so the tables stay readable; `-Dkafka.log=INFO` turns it up.
 
-On Windows use `mvnw.cmd` instead of `./mvnw`; everything else is identical.
+`./mvnw` resolves to `mvnw.cmd` automatically in both `cmd.exe` and PowerShell, so no path change is needed on
+Windows. PowerShell has one specific catch, though: it splits a `-D` flag at the first `.` unless the *whole*
+flag is quoted as a single token, so `-Dexec.args="producer-batching"` (quoting only the value, as in the
+examples above) fails with `Unknown lifecycle phase`. Quote the whole thing instead:
+`"-Dexec.args=producer-batching"`; the same applies to `-Dspring-boot.run.arguments=` below. `cmd.exe` and
+Git Bash run the examples above unmodified.
 
 ## Run a Spring Boot demo (part 2)
 

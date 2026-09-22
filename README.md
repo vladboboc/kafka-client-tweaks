@@ -35,6 +35,10 @@ docker compose up -d --wait
 ./mvnw -q -pl spring-boot-kafka -am compile spring-boot:run -Dspring-boot.run.arguments="spring-setup"
 ```
 
+**Windows PowerShell:** quote the whole `-D` flag as one token, not just the value shown above —
+`"-Dexec.args=producer-baseline"` — or PowerShell splits it at the first `.` and Maven fails with
+`Unknown lifecycle phase`. `cmd.exe` and Git Bash run the commands exactly as written.
+
 Then open the UI at http://localhost:8080 and read on from [docs/00-setup.md](docs/00-setup.md).
 
 | Endpoint | URL |
