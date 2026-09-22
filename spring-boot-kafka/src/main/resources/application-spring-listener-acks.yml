@@ -1,0 +1,11 @@
+# Chapter 16: the listener container decides when offsets are committed, not enable.auto.commit.
+spring:
+  kafka:
+    consumer:
+      client-id: spring-acks
+      max-poll-records: 500
+    listener:
+      ack-mode: BATCH        # factory default for every listener that does not set ackMode itself (BATCH is also spring-kafka's own default)
+      ack-count: 1000        # COUNT / COUNT_TIME: commit once this many records were processed since the last commit
+      ack-time: 1s           # TIME / COUNT_TIME: commit once this much time passed since the last commit
+      poll-timeout: 1s       # the Duration handed to poll(); also the resolution of nack(sleep) and how fast stop() returns

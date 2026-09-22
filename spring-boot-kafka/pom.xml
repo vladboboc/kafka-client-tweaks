@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.kafkatweaks</groupId>
+        <artifactId>kafka-client-tweaks</artifactId>
+        <version>1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>spring-boot-kafka</artifactId>
+    <name>spring-boot-kafka</name>
+    <description>The same producer and consumer knobs through Spring Boot and spring-kafka: properties, KafkaTemplate, @KafkaListener, error handling, transactions, share consumers.</description>
+
+    <!-- Boot's BOM decides every version this module does not name itself. That includes kafka-clients: Boot 4.1.1
+         manages 4.2.1 and spring-kafka 4.1.1 is compiled against it, so this module runs the client version Spring
+         tests against, not the 4.3.1 of the plain module. The brokers (Kafka 4.3) accept both. To run the broker's
+         client line instead, declare org.apache.kafka:kafka-clients:${kafka.version} in this dependencyManagement
+         ABOVE the import: an explicit entry beats an imported one. -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- The shared helpers (Env, Topics, Table, MetricsReport, Knobs, Seed, Workload, the Avro Order class). Their
+             transitive kafka-clients 4.3.1 is pinned down to Boot's 4.2.1 by the BOM above: managed versions apply to
+             transitive dependencies too. tweaks-common only uses APIs that exist in 4.2.1. -->
+        <dependency>
+            <groupId>io.kafkatweaks</groupId>
+            <artifactId>tweaks-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- spring-kafka + Boot's Kafka auto-configuration (KafkaTemplate, factories, KafkaAdmin, listener containers). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-kafka</artifactId>
+        </dependency>
+        <!-- Jackson 3: spring-kafka's JacksonJsonSerializer/Deserializer need tools.jackson on the classpath (chapter 21). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jackson</artifactId>
+        </dependency>
+        <!-- A MeterRegistry. With one present, Boot binds the kafka-clients metrics into Micrometer and spring-kafka
+             keeps its spring.kafka.template / spring.kafka.listener timers. No web endpoints: the demos read the registry. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-micrometer-metrics</artifactId>
+        </dependency>
+        <!-- Chapter 21: Confluent Avro serde + Schema Registry client, not managed by Boot; same 8.3 line as the brokers. -->
+        <dependency>
+            <groupId>io.confluent</groupId>
+            <artifactId>kafka-avro-serializer</artifactId>
+            <version>${confluent.version}</version>
+        </dependency>
+
+        <!-- ===== test (chapter 22) ===== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- @EmbeddedKafka: a KRaft broker inside the test JVM, plus KafkaTestUtils. Pulls kafka-server into test scope. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-kafka-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Every demo is launched the same way (the first argument is the demo, the rest are its key=value knobs):
+                     ./mvnw -q -pl spring-boot-kafka -am compile spring-boot:run -Dspring-boot.run.arguments="<demo> [key=value ...]"
+                 repackage also produces an executable jar:
+                     java -jar spring-boot-kafka/target/spring-boot-kafka-1.0-SNAPSHOT.jar <demo> [key=value ...] -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <skip>false</skip>
+                    <mainClass>io.kafkatweaks.spring.SpringTweaksApplication</mainClass>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

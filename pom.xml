@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>io.kafkatweaks</groupId>
+    <artifactId>kafka-client-tweaks</artifactId>
+    <version>1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>kafka-client-tweaks</name>
+    <description>Hands-on guide to tuning Kafka producers and consumers: plain Java clients (chapters 01-13), then the same knobs through Spring Boot / spring-kafka (chapters 14-22).</description>
+
+    <modules>
+        <module>tweaks-common</module>
+        <module>plain-clients</module>
+        <module>spring-boot-kafka</module>
+    </modules>
+
+    <properties>
+        <!-- Java 25 (LTS). `release` (not source/target) makes javac check API usage against the 25
+             class-file library, so a newer JDK on the build machine cannot leak newer APIs into the code. -->
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!-- The three "Kafka line" versions must move together:
+               cp-kafka / cp-schema-registry images 8.3.x  ==  Apache Kafka 4.3
+               kafka-clients 4.3.x                          ==  same wire protocol + same KIPs as the broker
+               io.confluent serializers 8.3.x               ==  built against kafka-clients 4.3
+             Mixing lines works (Kafka is backward compatible) but the docs here describe 4.3 behaviour. -->
+        <kafka.version>4.3.1</kafka.version>
+        <confluent.version>8.3.2</confluent.version>
+        <!-- Runtime avro jar must be the exact version avro-maven-plugin generated the classes with. -->
+        <avro.version>1.12.2</avro.version>
+        <jackson.version>2.22.2</jackson.version>
+        <slf4j.version>2.0.19</slf4j.version>
+        <logback.version>1.6.3</logback.version>
+        <junit.version>6.1.3</junit.version>
+        <assertj.version>3.27.7</assertj.version>
+
+        <!-- Plugins. maven-compiler-plugin >= 3.15 is required to understand `release 25`. -->
+        <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
+        <maven-surefire-plugin.version>3.6.0</maven-surefire-plugin.version>
+        <exec-maven-plugin.version>3.6.4</exec-maven-plugin.version>
+
+        <!-- Part 2. Boot's BOM manages spring-kafka (4.1.1) and kafka-clients (4.2.1) inside the spring-boot-kafka module. -->
+        <spring-boot.version>4.1.1</spring-boot.version>
+    </properties>
+
+    <!-- Confluent publishes kafka-avro-serializer and the schema-registry client to its own repository. -->
+    <repositories>
+        <repository>
+            <id>confluent</id>
+            <url>https://packages.confluent.io/maven/</url>
+        </repository>
+    </repositories>
+
+    <!-- Deliberately tiny. The plain modules take every version from the properties above; the Spring Boot
+         module imports spring-boot-dependencies and lets Boot decide (including kafka-clients 4.2.1 instead of the
+         4.3.1 used here). A pin in a parent pom would silently beat an imported BOM, so nothing that Boot manages
+         is pinned here. Avro is the exception: Boot does not manage it, and the Confluent serializers drag in an
+         older avro (1.12.1) that would otherwise win the "nearest wins" tie and take ClassSecurityValidator
+         (1.12.2+) away from AvroTrust. -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.apache.avro</groupId>
+                <artifactId>avro</artifactId>
+                <version>${avro.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>${maven-compiler-plugin.version}</version>
+                    <configuration>
+                        <!-- Surface everything javac knows; the demos are meant to be read. -->
+                        <showWarnings>true</showWarnings>
+                        <compilerArgs>
+                            <arg>-Xlint:all,-processing</arg>
+                        </compilerArgs>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${maven-surefire-plugin.version}</version>
+                </plugin>
+                <!-- Demos are started with `./mvnw -q -pl <module> -am compile exec:java ...`. `-am compile` puts tweaks-common
+                     into the reactor and compiles it, which is what makes Maven 3 resolve it from target/classes instead
+                     of asking a repository; but `-am` also invokes the goal on tweaks-common (and the root) itself. skip=true here,
+                     skip=false in the module that owns the demos, keeps exactly one main class running. -->
+                <plugin>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>exec-maven-plugin</artifactId>
+                    <version>${exec-maven-plugin.version}</version>
+                    <configuration>
+                        <skip>true</skip>
+                        <!-- mainClass is a required parameter and is validated before skip is looked at; never run. -->
+                        <mainClass>none</mainClass>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.avro</groupId>
+                    <artifactId>avro-maven-plugin</artifactId>
+                    <version>${avro.version}</version>
+                </plugin>
+                <!-- Same -am story as exec-maven-plugin: spring-boot:run is skipped everywhere except in spring-boot-kafka. -->
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <version>${spring-boot.version}</version>
+                    <configuration>
+                        <skip>true</skip>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>

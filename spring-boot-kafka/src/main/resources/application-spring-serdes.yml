@@ -1,0 +1,38 @@
+# Chapter 21: JSON (Jackson 3) as the application's default serialization, configured entirely here; Confluent Avro
+# through a second factory pair built in SerdesConfig from the same properties.
+spring:
+  kafka:
+    properties:
+      # Read by the Confluent serializer AND deserializer (both factories are built from KafkaProperties), hence the shared block.
+      "[schema.registry.url]": ${SCHEMA_REGISTRY_URL:http://localhost:8081}
+    producer:
+      client-id: spring-serdes
+      value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer
+      properties:
+        # The __TypeId__ header carries a token instead of the class name, so consumers need not have (or know) our class.
+        "[spring.json.type.mapping]": order:io.kafkatweaks.common.Order
+        # "[spring.json.add.type.headers]": false    # no header at all; every consumer must then configure its type
+    consumer:
+      client-id: spring-serdes
+      value-deserializer: org.springframework.kafka.support.serializer.JacksonJsonDeserializer
+      properties:
+        # Classes the deserializer may instantiate from a header (the header is data from the producer, i.e. untrusted input).
+        "[spring.json.trusted.packages]": io.kafkatweaks.common,io.kafkatweaks.spring.serdes
+        # Token -> class, the consumer-side half of the producer's mapping. Listeners override it per consumer (SerdesListeners).
+        "[spring.json.type.mapping]": order:io.kafkatweaks.common.Order
+        # "[spring.json.value.default.type]": ...    # the type when there is no header (or with use.type.headers=false)
+        # "[spring.json.use.type.headers]": false
+    listener:
+      poll-timeout: 500ms
+
+logging:
+  level:
+    # The demo's first Avro send fails on purpose (untrusted generated class) and reports it itself; without this the
+    # template's LoggingProducerListener adds an ERROR with a stack trace.
+    org.springframework.kafka.support.LoggingProducerListener: "OFF"
+
+# An Avro-only application would instead put this on the default factories:
+#   spring.kafka.producer.value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
+#   spring.kafka.consumer.value-deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
+#   spring.kafka.consumer.properties["specific.avro.reader"]: true
+#   spring.kafka.producer.properties["auto.register.schemas"]: false     # production: schemas come from CI/CD (chapter 13)

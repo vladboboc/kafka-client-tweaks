@@ -1,0 +1,21 @@
+# Chapter 14: knobs from chapters 01-08 written the Spring Boot way. Typed keys are converted by Boot (DataSize,
+# Duration, enums); anything without a typed key goes through properties[...] untouched. The bracket notation
+# ("[linger.ms]") keeps the dots inside the map key; it is what the Boot reference uses for Kafka properties.
+spring:
+  kafka:
+    properties:
+      "[metadata.max.age.ms]": 30000          # common: producer, consumer AND admin get it
+    producer:
+      acks: all
+      batch-size: 64KB                        # DataSize -> batch.size=65536
+      compression-type: zstd
+      properties:
+        "[linger.ms]": 20                     # no typed key for linger.ms
+        "[enable.idempotence]": true
+    consumer:
+      group-id: spring-setup
+      max-poll-records: 250
+      fetch-max-wait: 250ms                   # Duration -> fetch.max.wait.ms=250
+      isolation-level: read_committed         # enum, relaxed binding
+      properties:
+        "[group.protocol]": consumer          # KIP-848 protocol; Boot 4.1 has no typed key for it

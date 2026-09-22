@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.kafkatweaks</groupId>
+        <artifactId>kafka-client-tweaks</artifactId>
+        <version>1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>plain-clients</artifactId>
+    <name>plain-clients</name>
+    <description>Producer and consumer tuning demos on the plain org.apache.kafka client library.</description>
+
+    <dependencies>
+        <!-- The shared helpers (Env, Topics, Table, MetricsReport, Knobs, Seed, Workload, JsonSerde, the generated Avro
+             Order class and AvroTrust) and, through them, kafka-clients ${kafka.version} with its compression codecs. -->
+        <dependency>
+            <groupId>io.kafkatweaks</groupId>
+            <artifactId>tweaks-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Chapter 13 only: Confluent Avro serde + Schema Registry client, same 8.3 line as the brokers. -->
+        <dependency>
+            <groupId>io.confluent</groupId>
+            <artifactId>kafka-avro-serializer</artifactId>
+            <version>${confluent.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>${logback.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- ===== test: pure-logic unit tests only, no broker needed for `./mvnw verify` ===== -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Every demo is launched the same way:
+                     ./mvnw -q -pl plain-clients -am compile exec:java -Dexec.args="<demo> [key=value ...]"
+                 Run is a tiny dispatcher that lists the demos when called without arguments.
+                 cleanupDaemonThreads=false: Kafka clients leave daemon threads behind on close(); without
+                 this the plugin waits for them and prints a wall of warnings. -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <configuration>
+                    <skip>false</skip>
+                    <mainClass>io.kafkatweaks.Run</mainClass>
+                    <cleanupDaemonThreads>false</cleanupDaemonThreads>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -1,0 +1,171 @@
+# Kafka Client Tweaks — local stack.
+#
+#   docker compose up -d --wait        3-broker KRaft cluster + Schema Registry + Kafbat UI (5 containers + topic-init)
+#   docker compose down -v             stop and wipe the data volumes
+#
+# Why three brokers for a client tutorial? Half of the producer chapters are about what acks=all,
+# min.insync.replicas and idempotence actually buy you, and you cannot see that on one node. The
+# KRaft controller quorum has 3 voters and needs 2 of 3 to elect a leader, so stopping ONE broker
+# (as several demos ask you to) is fine; stopping two takes the whole cluster down with it.
+#
+# Confluent Platform 8.x is KRaft-only — ZooKeeper was removed in CP 8.0. CP 8.3 = Apache Kafka 4.3.
+
+name: kafka-client-tweaks
+
+x-kafka-common: &kafka-common
+  image: confluentinc/cp-kafka:8.3.2
+  environment: &kafka-env
+    # Same CLUSTER_ID on every node; this is a valid base64-encoded UUID.
+    CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    KAFKA_PROCESS_ROLES: broker,controller
+    KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+    KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+    KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+    # acks=all on the producer only means "durably replicated" if the ISR floor is > 1.
+    # Chapter 03 uses topics with min.insync.replicas=1 vs 2 to show the difference.
+    KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+    KAFKA_MIN_INSYNC_REPLICAS: 2
+    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+    KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    # Off on purpose: a typo in a topic name must fail loudly, not silently create a 1-partition topic.
+    # Demos create their topics through AdminClient with deliberate partition counts.
+    KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    # Server-side session/heartbeat for the KIP-848 consumer protocol (chapter 09). These are the
+    # Kafka 4.x defaults, spelled out because the consumer can no longer set them itself.
+    KAFKA_GROUP_CONSUMER_SESSION_TIMEOUT_MS: 45000
+    KAFKA_GROUP_CONSUMER_HEARTBEAT_INTERVAL_MS: 5000
+    # Follower fetching (chapter 12): lets a consumer with client.rack read from the replica in its own rack.
+    # Without this selector the broker ignores client.rack and every fetch goes to the partition leader.
+    KAFKA_REPLICA_SELECTOR_CLASS: org.apache.kafka.common.replica.RackAwareReplicaSelector
+    # Share groups (chapter 11): allow a group to set share.record.lock.duration.ms as low as 2 s so the
+    # "consumer died holding records" scenario replays in seconds instead of the 15 s production floor.
+    KAFKA_GROUP_SHARE_MIN_RECORD_LOCK_DURATION_MS: 2000
+    KAFKA_JMX_PORT: 9101
+    # Confluent images default to a 1 GB heap. Three brokers at that size is 3 GB before anything
+    # else starts, which is enough to destabilise the whole stack on a normal laptop.
+    KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+  healthcheck:
+    test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+    interval: 10s
+    timeout: 10s
+    retries: 20
+    start_period: 30s
+  deploy:
+    resources:
+      limits:
+        memory: 1g
+
+services:
+  # ───────────────────────────── Kafka (KRaft, combined mode) ─────────────────────────────
+  # Each broker sits in its own "rack" so chapter 12 can demonstrate client.rack / follower fetching.
+  kafka-1:
+    <<: *kafka-common
+    hostname: kafka-1
+    container_name: kafka-1
+    ports: ["19092:19092", "9101:9101"]
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 1
+      KAFKA_BROKER_RACK: rack-a
+      # Bind on 0.0.0.0, advertise the routable name. Binding to "kafka-1:9092" would attach only to
+      # the container IP, so the healthcheck's localhost:9092 connection would be refused.
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:19092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-1:9092,EXTERNAL://localhost:19092
+    volumes: ["kafka1-data:/var/lib/kafka/data"]
+
+  kafka-2:
+    <<: *kafka-common
+    hostname: kafka-2
+    container_name: kafka-2
+    ports: ["29092:29092"]
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 2
+      KAFKA_BROKER_RACK: rack-b
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-2:9092,EXTERNAL://localhost:29092
+    volumes: ["kafka2-data:/var/lib/kafka/data"]
+
+  kafka-3:
+    <<: *kafka-common
+    hostname: kafka-3
+    container_name: kafka-3
+    ports: ["39092:39092"]
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 3
+      KAFKA_BROKER_RACK: rack-c
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:39092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-3:9092,EXTERNAL://localhost:39092
+    volumes: ["kafka3-data:/var/lib/kafka/data"]
+
+  # Creates the tutorial topics and makes sure share groups (chapter 11) are enabled, then exits.
+  topic-init:
+    image: confluentinc/cp-kafka:8.3.2
+    container_name: topic-init
+    depends_on:
+      kafka-1: {condition: service_healthy}
+      kafka-2: {condition: service_healthy}
+      kafka-3: {condition: service_healthy}
+    entrypoint: ["/bin/bash", "/scripts/create-topics.sh"]
+    volumes: ["./docker/kafka/create-topics.sh:/scripts/create-topics.sh:ro"]
+    restart: on-failure
+
+  # ───────────────────────────── Schema Registry (chapter 13) ─────────────────────────────
+  schema-registry:
+    image: confluentinc/cp-schema-registry:8.3.2
+    hostname: schema-registry
+    container_name: schema-registry
+    depends_on:
+      kafka-1: {condition: service_healthy}
+    ports: ["8081:8081"]
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka-1:9092,PLAINTEXT://kafka-2:9092,PLAINTEXT://kafka-3:9092
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: 3
+      # BACKWARD is the registry default; chapter 13 changes it per subject to show what each level rejects.
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: backward
+      SCHEMA_REGISTRY_HEAP_OPTS: "-Xms128m -Xmx384m"
+    # The 8.3.x image is a slim UBI build with no curl/wget, so the probe is a bash /dev/tcp GET.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8081 && printf 'GET /subjects HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q ' 200 '"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+
+  # ───────────────────────────── Kafbat UI ─────────────────────────────
+  # Open source, one container, no license. Topics, partitions, consumer groups and their lag,
+  # messages, Schema Registry subjects — everything the chapters ask you to look at.
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:v1.5.0
+    hostname: kafka-ui
+    container_name: kafka-ui
+    depends_on:
+      kafka-1: {condition: service_healthy}
+      schema-registry: {condition: service_healthy}
+    ports: ["8080:8080"]
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+      # Lets you add/edit clusters from the UI instead of restarting the container.
+      DYNAMIC_CONFIG_ENABLED: "true"
+      JAVA_OPTS: "-Xms128m -Xmx512m"
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+
+volumes:
+  kafka1-data: {}
+  kafka2-data: {}
+  kafka3-data: {}

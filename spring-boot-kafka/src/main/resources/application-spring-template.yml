@@ -1,0 +1,9 @@
+# Chapter 15: the auto-configured KafkaTemplate. The producer keeps the client defaults on purpose (that is the
+# "defaults" row of the comparison); the demo derives tuned templates from the same ProducerFactory in code.
+spring:
+  kafka:
+    producer:
+      client-id: spring-template
+    template:
+      default-topic: spring.template      # sendDefault(...) goes here
+      observation-enabled: false          # true = one Micrometer Observation (and tracing span) per send instead of the timer

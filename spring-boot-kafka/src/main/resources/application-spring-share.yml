@@ -1,0 +1,16 @@
+# Chapter 20: Boot 4.1 has no auto-configuration for share consumers, so there is little to say here. ShareConfig builds
+# the share consumer factory from spring.kafka.consumer.* (KafkaProperties.buildConsumerProperties()) minus the keys that
+# only mean something to a consumer group; the queue semantics themselves are GROUP configs (share.auto.offset.reset,
+# share.record.lock.duration.ms, share.delivery.count.limit), which the demo sets through Admin.
+spring:
+  kafka:
+    consumer:
+      # Records one share fetch may acquire (default). In EXPLICIT mode the container commits the acknowledgements of a
+      # poll after its last record was processed, so this is also how many acquisition locks one slow record can let expire.
+      max-poll-records: 500
+      properties:
+        # batch_optimized (default) hands out whole record batches and may exceed max.poll.records; record_limit makes
+        # the limit strict (KIP-1206). share.acknowledgement.mode is NOT set here: the container decides it.
+        "[share.acquire.mode]": batch_optimized
+      # Not set for share consumers, and stripped by ShareConfig where inherited (auto-offset-reset comes from
+      # application.yml): auto-offset-reset, enable-auto-commit, isolation-level, group-instance-id.

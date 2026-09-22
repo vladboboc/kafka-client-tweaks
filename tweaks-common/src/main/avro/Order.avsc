@@ -1,0 +1,21 @@
+{
+  "type": "record",
+  "name": "Order",
+  "namespace": "io.kafkatweaks.avro.generated",
+  "doc": "Version 1 of the order event used by chapter 13. The wire contract: what goes into the Schema Registry and what every consumer must be able to read.",
+  "fields": [
+    { "name": "orderId", "type": "string", "doc": "Aggregate id; also the Kafka record key." },
+    { "name": "customerId", "type": "string" },
+    {
+      "name": "totalAmount",
+      "type": { "type": "bytes", "logicalType": "decimal", "precision": 12, "scale": 2 },
+      "doc": "Exact decimal; Avro encodes it as the two's-complement bytes of the unscaled value."
+    },
+    { "name": "currency", "type": "string", "default": "EUR" },
+    {
+      "name": "createdAt",
+      "type": { "type": "long", "logicalType": "timestamp-millis" },
+      "doc": "When the order was created, as epoch millis; generated code maps it to java.time.Instant."
+    }
+  ]
+}

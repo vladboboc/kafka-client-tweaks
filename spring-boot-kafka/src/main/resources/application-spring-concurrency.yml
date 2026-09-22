@@ -1,0 +1,14 @@
+# Chapter 17: how many consumers a @KafkaListener runs, what one call receives, and how the container is slowed down.
+spring:
+  threads:
+    virtual:
+      enabled: true                 # Boot 4: the listener containers' consumer threads become virtual threads
+  kafka:
+    consumer:
+      client-id: spring-parallel
+      max-poll-records: 500
+    listener:
+      concurrency: 3                # default for every @KafkaListener that does not set concurrency itself
+      type: single                  # single = one record per call (batch = the whole poll; the demo opts in per listener with batch="true")
+      poll-timeout: 1s
+      idle-event-interval: 2s       # publish ListenerContainerIdleEvent when a container saw no records for 2 s

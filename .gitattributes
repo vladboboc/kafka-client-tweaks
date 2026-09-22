@@ -1,0 +1,11 @@
+# Bash scripts and the Unix wrapper must stay LF even when checked out on Windows;
+# the topic-init container runs create-topics.sh with /bin/bash.
+*.sh   text eol=lf
+mvnw   text eol=lf
+mvnw.cmd text eol=crlf
+*.cmd  text eol=crlf
+*.java text
+*.xml  text
+*.yml  text
+*.md   text
+*.avsc text

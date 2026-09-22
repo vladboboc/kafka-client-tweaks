@@ -1,0 +1,32 @@
+# Shared by every demo. Each chapter adds its own spring.kafka.* knobs in application-<demo>.yml; the demo name is
+# the active profile (see SpringTweaksApplication).
+spring:
+  main:
+    banner-mode: off
+  kafka:
+    # The EXTERNAL listeners of the compose stack; BOOTSTRAP_SERVERS is the variable the plain module honours too.
+    bootstrap-servers: ${BOOTSTRAP_SERVERS:localhost:19092,localhost:29092,localhost:39092}
+    # Every client this application creates carries this client.id (listener containers append -0, -1, ... per consumer).
+    client-id: spring-tweaks
+    consumer:
+      auto-offset-reset: earliest
+    listener:
+      # Containers normally start during the context refresh, BEFORE any ApplicationRunner. The demos seed their
+      # topics first and then start their listeners through KafkaListenerEndpointRegistry (chapter 16).
+      auto-startup: false
+    admin:
+      # A stack that is down should fail the demo within 10 s instead of hanging: fail-fast is bounded by the
+      # operation timeout (default 30 s).
+      fail-fast: true
+      operation-timeout: 10s
+
+logging:
+  level:
+    root: WARN
+    io.kafkatweaks: INFO
+    # No "Starting SpringTweaksApplication ... / Started ..." lines between the demo tables.
+    io.kafkatweaks.spring.SpringTweaksApplication: WARN
+    # KAFKA_LOG=INFO (or DEBUG) shows what the clients do, like -Dkafka.log in the plain module.
+    org.apache.kafka: ${KAFKA_LOG:WARN}
+    io.confluent: ${KAFKA_LOG:WARN}
+    org.springframework.kafka: WARN

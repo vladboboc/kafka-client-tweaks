@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.kafkatweaks</groupId>
+        <artifactId>kafka-client-tweaks</artifactId>
+        <version>1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>tweaks-common</artifactId>
+    <name>tweaks-common</name>
+    <description>Helpers shared by the demo modules: environment, topic admin, tables, client metrics, payloads, seeding, the Avro Order schema.</description>
+
+    <dependencies>
+        <!-- The Kafka line of the brokers (CP 8.3 = Kafka 4.3). It transitively brings the compression codecs
+             (lz4-java, snappy-java, zstd-jni) at runtime scope. The Spring Boot module pins this transitive
+             dependency down to the version Boot manages (4.2.1), so this module only uses APIs that exist there. -->
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-clients</artifactId>
+            <version>${kafka.version}</version>
+        </dependency>
+
+        <!-- JsonSerde: Jackson 2 with java.time support (Instant fields in Order). -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+
+        <!-- Avro runtime for the generated Order class and for AvroTrust (ClassSecurityValidator exists since 1.12.1).
+             Must be the exact version avro-maven-plugin generated the classes with; pinned in the root pom. -->
+        <dependency>
+            <groupId>org.apache.avro</groupId>
+            <artifactId>avro</artifactId>
+        </dependency>
+
+        <!-- ===== test: pure-logic unit tests only, no broker needed for `./mvnw verify` ===== -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Generates io.kafkatweaks.avro.generated.* from src/main/avro/*.avsc at generate-sources.
+                 stringType=String: fields become java.lang.String instead of CharSequence/Utf8, which is
+                 what every caller actually wants. -->
+            <plugin>
+                <groupId>org.apache.avro</groupId>
+                <artifactId>avro-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>schema</goal>
+                        </goals>
+                        <configuration>
+                            <sourceDirectory>${project.basedir}/src/main/avro</sourceDirectory>
+                            <outputDirectory>${project.build.directory}/generated-sources/avro</outputDirectory>
+                            <stringType>String</stringType>
+                            <!-- decimal logical type -> java.math.BigDecimal instead of a raw ByteBuffer -->
+                            <enableDecimalLogicalType>true</enableDecimalLogicalType>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

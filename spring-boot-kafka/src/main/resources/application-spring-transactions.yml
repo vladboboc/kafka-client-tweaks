@@ -1,0 +1,23 @@
+# Chapter 19: one property makes the producer factory transactional, auto-configures a KafkaTransactionManager
+# and wires it into the listener container factory. Everything else follows from that.
+spring:
+  kafka:
+    producer:
+      client-id: spring-txn
+      transaction-id-prefix: spring-txn-      # transactional.id = prefix + a per-producer suffix (spring-txn-0, spring-txn-1, ...)
+    consumer:
+      client-id: spring-txn
+      isolation-level: read_committed         # listeners never see records of open or aborted transactions
+    template:
+      allow-non-transactional: false          # the default: a send() outside a transaction is an error (part 2 shows both)
+    listener:
+      poll-timeout: 500ms
+      # stop() normally finishes the records of the current poll first (500 x the handler time here); immediate-stop
+      # quits after the current record, so the demo can hand the topic from one listener to the next quickly.
+      immediate-stop: true
+
+logging:
+  level:
+    # Boot's LoggingProducerListener logs every record whose batch is failed by a rollback ("Failing batch since
+    # transaction was aborted"), one ERROR per record. Expected in this chapter; the demo reports the outcome itself.
+    org.springframework.kafka.support.LoggingProducerListener: "OFF"

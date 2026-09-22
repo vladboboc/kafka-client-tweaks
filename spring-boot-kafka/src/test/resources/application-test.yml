@@ -1,0 +1,8 @@
+# Active in every @TweaksSpringTest. The TopicsConfig topics are replication factor 3, which a one-node embedded
+# broker rejects, and a context test without any broker must not wait for KafkaAdmin: tests create the topics they
+# need through @EmbeddedKafka(topics = ...) instead.
+spring:
+  kafka:
+    admin:
+      auto-create: false
+      fail-fast: false

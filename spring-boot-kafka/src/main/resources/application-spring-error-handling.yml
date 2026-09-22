@@ -1,0 +1,24 @@
+# Chapter 18: JSON values (so a poison pill can exist), an ErrorHandlingDeserializer in front of the JSON deserializer,
+# and short polls so the retry timelines are readable.
+spring:
+  kafka:
+    producer:
+      client-id: spring-errors
+      value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer   # Order -> JSON + __TypeId__ header (chapter 21)
+    consumer:
+      client-id: spring-errors
+      # The deserializer that never throws: a failure becomes a null value plus a header, and the container's error
+      # handler gets a DeserializationException (fatal by default) instead of the poll loop dying on the record.
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        "[spring.deserializer.value.delegate.class]": org.springframework.kafka.support.serializer.JacksonJsonDeserializer
+        "[spring.json.trusted.packages]": io.kafkatweaks.common
+        "[spring.json.value.default.type]": io.kafkatweaks.common.Order
+    listener:
+      poll-timeout: 500ms
+
+logging:
+  level:
+    # The retry-topic recoverer logs every hand-over to a retry topic or the DLT at ERROR, stack trace included;
+    # the demo prints its own timeline instead.
+    org.springframework.kafka.retrytopic.DeadLetterPublishingRecovererFactory: "OFF"
