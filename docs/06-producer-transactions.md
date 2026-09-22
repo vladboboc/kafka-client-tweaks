@@ -11,22 +11,23 @@ and both are what people mean by "exactly-once" in a Kafka-to-Kafka pipeline.
 
 ```mermaid
 sequenceDiagram
+    %% participant alias is CO, not OFF: "off" is a mermaid keyword (autonumber off), so "TC->>OFF:" fails to parse
     participant P as producer<br/>(transactional.id = X)
     participant TC as transaction coordinator
     participant T1 as partition out-0
     participant T2 as partition out-2
-    participant OFF as __consumer_offsets
+    participant CO as __consumer_offsets
     P->>TC: initTransactions() — get PID + epoch, fence older X
     P->>TC: beginTransaction()
     P->>T1: records (marked with PID/epoch)
     P->>T2: records
     P->>TC: sendOffsetsToTransaction(offsets, groupMetadata)
-    TC->>OFF: offsets, pending
+    TC->>CO: offsets, pending
     P->>TC: commitTransaction()
     TC->>T1: COMMIT marker
     TC->>T2: COMMIT marker
-    TC->>OFF: COMMIT marker
-    Note over T1,OFF: read_committed consumers see everything or nothing
+    TC->>CO: COMMIT marker
+    Note over T1,CO: read_committed consumers see everything or nothing
 ```
 
 ## The knobs
