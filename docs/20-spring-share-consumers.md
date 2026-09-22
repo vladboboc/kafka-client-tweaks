@@ -1,6 +1,6 @@
 # 20 · Share consumers (queues) in Spring
 
-**Demo:** `spring-share` · [ShareDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/ShareDemo.java) · [ShareConfig.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/ShareConfig.java) · [ShareListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/ShareListeners.java) · [ShareOutcomes.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/ShareOutcomes.java) · [application-spring-share.yml](../spring-boot-kafka/src/main/resources/application-spring-share.yml)
+**Demo:** `spring-share` · [ShareDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/ShareDemo.java) · [application-spring-share.yml](../spring-boot-kafka/src/main/resources/application-spring-share.yml) · **Recipes:** [ShareConfig.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/ShareConfig.java), [ShareListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/ShareListeners.java), [ReleaseTransientRecoverer.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/ReleaseTransientRecoverer.java), [RenewWhileWorking.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/RenewWhileWorking.java)
 
 ## The problem
 
@@ -8,7 +8,7 @@ Chapter 11 drove a `KafkaShareConsumer` by hand: poll, decide per record (`ACCEP
 commit the acknowledgements, respect the acquisition lock. spring-kafka 4.1 wraps that loop in a
 `ShareKafkaMessageListenerContainer`, so a share listener is an ordinary `@KafkaListener` with a different
 container factory. Boot 4.1 has **no auto-configuration** for any of it: the `ShareConsumerFactory` and the
-container factories are beans you write (a dozen lines, [ShareConfig.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/ShareConfig.java)),
+container factories are beans you write (a dozen lines, [ShareConfig.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/ShareConfig.java)),
 and there is no `spring.kafka.share.*`. The queue semantics themselves are still **group** configs
 (`share.record.lock.duration.ms`, `share.delivery.count.limit`, `share.auto.offset.reset`), set through `Admin` as
 in chapter 11.
@@ -47,6 +47,65 @@ Two log lines you will see and can ignore: at every start of an `EXPLICIT` conta
 AcknowledgingShareConsumerAwareMessageListener but ShareAckMode.EXPLICIT is active` (the annotation adapter always
 implements that interface, whether or not the method takes a `ShareAcknowledgment`), and at shutdown `Consumer stopped`
 per consumer thread.
+
+## The code that matters
+
+Boot configures nothing for share consumers, so the beans are yours, from
+[ShareConfig.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/ShareConfig.java):
+
+<!-- recipe: spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/ShareConfig.java -->
+```java
+@Bean
+ShareConsumerFactory<String, String> shareConsumerFactory(KafkaProperties properties) {
+    Map<String, Object> configs = new HashMap<>(properties.buildConsumerProperties());
+    configs.keySet().removeAll(CONSUMER_GROUP_ONLY);   // application.yml's auto-offset-reset=earliest among them
+    return new DefaultShareConsumerFactory<>(configs);
+}
+// ...
+@Bean
+ShareKafkaListenerContainerFactory<String, String> manualShareContainerFactory(
+        ShareConsumerFactory<String, String> shareConsumerFactory, AcknowledgementCommitCallback commitCallback) {
+    var factory = new ShareKafkaListenerContainerFactory<>(shareConsumerFactory);
+    // ...
+    factory.getContainerProperties().setShareAckMode(ContainerProperties.ShareAckMode.MANUAL);
+    // ...
+    return factory;
+}
+```
+
+and the listener decides per record, from [ShareListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/ShareListeners.java)
+(`script.*` is the demo's scripted outcome; your decision goes there):
+
+<!-- recipe: spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/ShareListeners.java -->
+```java
+@KafkaListener(id = "share-manual", groupId = "spring-share-manual", topics = TopicsConfig.QUEUE,
+        containerFactory = "manualShareContainerFactory", concurrency = "2")
+public void manual(ConsumerRecord<String, String> record, ShareAcknowledgment ack) {
+    switch (script.manualDecision(record)) {
+        case ACCEPT -> ack.acknowledge();   // done
+        case RELEASE -> ack.release();      // "not now": back to the queue, deliveryCount + 1, any member may get it
+        case REJECT -> ack.reject();        // poison: archived, never delivered again
+        // ...
+    }
+}
+```
+
+- **`concurrency = "4"` on 3 partitions**: all four consumers got records. In a consumer group the fourth would sit idle.
+- **MANUAL mode means every record needs a decision**: `acknowledge()`, `release()` (it comes back with
+  `deliveryCount` 2) or `reject()`. The one record the demo leaves unacknowledged stalls its consumer thread for good:
+  385 records never got delivered.
+- **EXPLICIT + a recoverer** ([ReleaseTransientRecoverer.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/ReleaseTransientRecoverer.java)):
+  a thrown `TransientFailure` became RELEASE (300 records processed on their second delivery), anything else REJECT.
+- **A record slower than its lock**: renew it from the listener while a worker does the work
+  ([RenewWhileWorking.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/RenewWhileWorking.java)).
+  A 3 s record under a 2 s lock was renewed 4 times and acknowledged once; without it, EXPLICIT mode had all 40 of the
+  poll's acknowledgements refused.
+
+The demo sets the group configs through Admin, starts each listener in turn and reads the broker's answers through the
+`AcknowledgementCommitCallback`; everything else in
+[ShareDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/ShareDemo.java),
+[ShareScript.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/ShareScript.java) and
+[ShareOutcomes.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/ShareOutcomes.java) is measurement.
 
 ## Run it
 

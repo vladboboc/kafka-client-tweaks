@@ -8,14 +8,13 @@ import io.kafkatweaks.common.Payloads;
 import io.kafkatweaks.common.Table;
 import io.kafkatweaks.common.Topics;
 import io.kafkatweaks.common.Workload;
+import io.kafkatweaks.producer.recipe.KeyPartitioning;
+import io.kafkatweaks.producer.recipe.TenantPartitioner;
 import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.Partitioner;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.clients.producer.RoundRobinPartitioner;
-import org.apache.kafka.common.Cluster;
-import org.apache.kafka.common.utils.Utils;
 
 import java.util.List;
 import java.util.Map;
@@ -24,11 +23,12 @@ import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Chapter 04: which partition does a record land on, and why it matters for batching and ordering.
+ * Chapter 04: which partition does a record land on, and why it matters for batching and ordering. Measures
+ * {@link KeyPartitioning} and {@link TenantPartitioner}; everything else in this file is measurement.
  * <ol>
  *   <li>null keys: the built-in sticky partitioner vs {@link RoundRobinPartitioner} (batch size)</li>
  *   <li>keyed records: hash spread, a hot key, and {@code partitioner.ignore.keys}</li>
- *   <li>a custom {@link Partitioner}</li>
+ *   <li>a custom {@link org.apache.kafka.clients.producer.Partitioner}</li>
  * </ol>
  * <pre>
  *   records=30000
@@ -67,8 +67,7 @@ public final class ProducerPartitioningDemo implements Demo {
         System.out.println("   the default sticky partitioner fills ONE partition's batch until linger expires, then moves to another;");
         System.out.println("   RoundRobinPartitioner spreads consecutive records over all partitions, so each batch gets 1/6 of the records.\n");
         var sticky = Workload.run("sticky (default)", props(args, "sticky", Map.of()), TOPIC, pacedRecords, size, Workload.Payload.JSON, 0, rate);
-        var roundRobin = Workload.run("round-robin", props(args, "rr",
-                Map.of(ProducerConfig.PARTITIONER_CLASS_CONFIG, RoundRobinPartitioner.class.getName())), TOPIC, pacedRecords, size, Workload.Payload.JSON, 0, rate);
+        var roundRobin = Workload.run("round-robin", props(args, "rr", KeyPartitioning.roundRobin()), TOPIC, pacedRecords, size, Workload.Payload.JSON, 0, rate);
         Workload.printComparison(List.of(sticky, roundRobin));
         Workload.printPartitionSpread(sticky);
         System.out.println("   (records/s is the pacing rate for both; look at batch-size-avg, records-per-request-avg and request-rate)");
@@ -80,12 +79,12 @@ public final class ProducerPartitioningDemo implements Demo {
         spread("hot key: %d%% of records share one key".formatted(hotPercent), props(args, "hot", Map.of()), records, size,
                 i -> (i % 100) < hotPercent ? "customer-hot" : Payloads.key(i, keys));
         spread("same keys, partitioner.ignore.keys=true (ordering per key is GONE)",
-                props(args, "ignore-keys", Map.of(ProducerConfig.PARTITIONER_IGNORE_KEYS_CONFIG, "true")), records, size,
+                props(args, "ignore-keys", KeyPartitioning.ignoreKeys()), records, size,
                 i -> Payloads.key(i, keys));
 
         // ---- 3. custom partitioner --------------------------------------------------------------
         System.out.println("\n3. a custom Partitioner: keys starting with \"vip-\" go to partition 0, everything else is hashed over 1..N-1.");
-        spread("TenantPartitioner", props(args, "custom", Map.of(ProducerConfig.PARTITIONER_CLASS_CONFIG, TenantPartitioner.class.getName())),
+        spread("TenantPartitioner", props(args, "custom", KeyPartitioning.partitioner(TenantPartitioner.class)),
                 records, size, i -> (i % 10 == 0) ? "vip-" + (i % 3) : Payloads.key(i, keys));
 
         System.out.println("""
@@ -128,48 +127,10 @@ public final class ProducerPartitioningDemo implements Demo {
                 perKeyPartition.size(), keyMovedPartition.size());
     }
 
-    private static Properties props(Args args, String clientId, Map<String, String> overrides) {
+    private static Properties props(Args args, String clientId, Map<String, ?> overrides) {
         var p = Env.producer("partitioning-" + clientId);
         p.put(ProducerConfig.LINGER_MS_CONFIG, "20");   // give batches time to fill so batch-size-avg is meaningful
         p.putAll(overrides);
         return args.applyOverrides(p);
     }
-
-    /**
-     * Example custom partitioner: a small set of "vip" tenants gets a dedicated partition (and therefore a
-     * dedicated consumer, if the group has as many members as partitions); everyone else is hashed over
-     * the remaining partitions with the same murmur2 hash the default partitioner uses.
-     */
-    public static final class TenantPartitioner implements Partitioner {
-
-        // Partitioners are shared by all sending threads: state must be thread-safe.
-        private final java.util.concurrent.atomic.AtomicInteger roundRobin = new java.util.concurrent.atomic.AtomicInteger();
-
-        @Override
-        public int partition(String topic, Object key, byte[] keyBytes, Object value, byte[] valueBytes, Cluster cluster) {
-            // partitionCountForTopic is declared Integer and is null for a topic this Cluster snapshot does not
-            // know; a Partitioner must still return a partition that exists, so treat it as the single partition 0.
-            Integer count = cluster.partitionCountForTopic(topic);
-            int partitions = count == null ? 1 : count;
-            if (partitions <= 1) {
-                return 0;   // nothing to reserve for vips: everything goes to the only partition there is
-            }
-            if (key instanceof String s && s.startsWith("vip-")) {
-                return 0;
-            }
-            if (keyBytes == null) {
-                return 1 + Math.floorMod(roundRobin.getAndIncrement(), partitions - 1);   // no key: round-robin over the non-vip partitions
-            }
-            return 1 + Utils.toPositive(Utils.murmur2(keyBytes)) % (partitions - 1);
-        }
-
-        @Override
-        public void close() {
-        }
-
-        @Override
-        public void configure(Map<String, ?> configs) {
-        }
-    }
-
 }

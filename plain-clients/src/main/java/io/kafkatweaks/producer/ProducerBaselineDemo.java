@@ -7,6 +7,7 @@ import io.kafkatweaks.common.Knobs;
 import io.kafkatweaks.common.MetricsReport;
 import io.kafkatweaks.common.Topics;
 import io.kafkatweaks.common.Workload;
+import io.kafkatweaks.producer.recipe.ProducerBasics;
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -16,9 +17,9 @@ import org.apache.kafka.clients.producer.RecordMetadata;
 import java.util.Properties;
 
 /**
- * Chapter 01: a producer with nothing tuned. Shows the send path, what one synchronous send costs,
- * what the default configuration is, and how to read the producer's own metrics. Every later chapter
- * changes one group of knobs and compares against this.
+ * Chapter 01: a producer with nothing tuned. Measures {@link ProducerBasics}; everything else in this file is
+ * measurement. Shows the send path, what one synchronous send costs, what the default configuration is, and how
+ * to read the producer's own metrics. Every later chapter changes one group of knobs and compares against this.
  *
  * <pre>
  *   records=20000   how many records to send
@@ -48,16 +49,16 @@ public final class ProducerBaselineDemo implements Demo {
             topics.ensure(topic, 3);
         }
 
-        Properties props = args.applyOverrides(Env.producer("baseline-producer"));
+        Properties props = args.applyOverrides(ProducerBasics.config(Env.bootstrapServers(), "baseline-producer"));   // <- the recipe under test
         Knobs.printProducer(props, KNOBS);
 
         // --- 1. One synchronous send: the slowest possible way to use a producer, and the clearest. ---
         try (var producer = new KafkaProducer<String, String>(props)) {
             long t0 = System.nanoTime();
-            RecordMetadata md = producer.send(new ProducerRecord<>(topic, "warm-up", "hello")).get();
+            RecordMetadata md = ProducerBasics.sendAndWait(producer, new ProducerRecord<>(topic, "warm-up", "hello"));
             double firstMs = (System.nanoTime() - t0) / 1_000_000d;
             t0 = System.nanoTime();
-            md = producer.send(new ProducerRecord<>(topic, "warm-up", "hello again")).get();
+            md = ProducerBasics.sendAndWait(producer, new ProducerRecord<>(topic, "warm-up", "hello again"));
             double secondMs = (System.nanoTime() - t0) / 1_000_000d;
             System.out.printf("%nsynchronous send #1: %.1f ms (includes metadata fetch + connection setup)%n", firstMs);
             System.out.printf("synchronous send #2: %.1f ms  -> %s-%d@%d%n", secondMs, md.topic(), md.partition(), md.offset());

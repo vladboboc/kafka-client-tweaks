@@ -1,6 +1,6 @@
 # 10 · Scaling and parallelism
 
-**Demo:** `consumer-parallel` · [ConsumerParallelDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerParallelDemo.java)
+**Demo:** `consumer-parallel` · [ConsumerParallelDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerParallelDemo.java) · **Recipe:** [PartitionedWorkerConsumer.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/PartitionedWorkerConsumer.java)
 
 ## The problem
 
@@ -28,6 +28,71 @@ that without breaking the two rules that keep a consumer correct.
 
 Virtual threads (Java 21+) make workers free to create; the interesting limits move to the systems the
 handler talks to.
+
+## The code that matters
+
+Mode 5, the production shape, is [PartitionedWorkerConsumer.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/PartitionedWorkerConsumer.java).
+The poll loop hands records out and never waits:
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/PartitionedWorkerConsumer.java -->
+```java
+ConsumerRecords<K, V> batch = consumer.poll(timeout);
+for (ConsumerRecord<K, V> record : batch) {
+    TopicPartition partition = new TopicPartition(record.topic(), record.partition());
+    inFlight.incrementAndGet();
+    // One single-threaded executor per partition: FIFO per partition, so order is kept.
+    workers.computeIfAbsent(partition, p -> Executors.newSingleThreadExecutor(Thread.ofVirtual().factory()))
+            .submit(() -> process(partition, record));
+}
+// Back-pressure: stop fetching while the workers are behind, but keep calling poll() so the group still sees
+// this member alive (max.poll.interval.ms).
+if (!paused && inFlight.get() > pauseAbove) {
+    consumer.pause(consumer.assignment());
+    paused = true;
+    pauses++;
+} else if (paused && inFlight.get() < resumeBelow) {
+    consumer.resume(consumer.assignment());
+    paused = false;
+}
+Map<TopicPartition, OffsetAndMetadata> offsets = watermarks();
+if (!offsets.isEmpty()) {
+    consumer.commitAsync(offsets, null);   // a lost async commit is harmless: the next one carries a higher watermark
+}
+```
+
+and a worker only moves its partition's watermark once a record is done:
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/PartitionedWorkerConsumer.java -->
+```java
+private void process(TopicPartition partition, ConsumerRecord<K, V> record) {
+    try {
+        if (failed.containsKey(partition)) {
+            return;   // an earlier record of this partition failed: go no further, or the order would break
+        }
+        handler.handle(record);
+        // Only this partition's worker writes this entry, one record at a time: the watermark only ever grows.
+        nextToCommit.computeIfAbsent(partition, p -> new AtomicLong()).set(record.offset() + 1);
+    } catch (Exception e) {
+        failed.putIfAbsent(partition, new Failure(record.offset(), e));
+    } finally {
+        inFlight.decrementAndGet();
+    }
+}
+```
+
+- **One consumer matched six** (628 vs 649 records/s below) because six workers run at once and the poll thread
+  never blocks; ordering per partition is kept, unlike mode 4.
+- **Commit the watermarks, never the position.** `close()` finishes the queued work and then commits
+  `watermarks()`; the no-arg `commitSync()` would commit everything fetched, done or not.
+- **`PartitionedWorkerConsumer.config()`** sets `max.partition.fetch.bytes=16K`: a poll returns records partition by
+  partition, and small per-partition fetches make one poll feed every worker.
+- **Rebalances and failures are handled**: revoked partitions are finished and committed in the rebalance listener
+  (`pipeline.subscribe(topics)`), a failing record stops its partition there and the next `pollOnce` reports it.
+  Neither happens in the demo; `PartitionedWorkerConsumerTest` covers both.
+
+The demo's mode 5 is this class with `r -> work(r, workMs)` as the handler; modes 1–4 show the alternatives, and
+everything else in [ConsumerParallelDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerParallelDemo.java)
+is measurement.
 
 ## Run it
 

@@ -1,6 +1,6 @@
 # 16 · `@KafkaListener` and acknowledgment modes
 
-**Demo:** `spring-listener-acks` · [ListenerAcksDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/ListenerAcksDemo.java) · [AckModeListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/AckModeListeners.java) · [application-spring-listener-acks.yml](../spring-boot-kafka/src/main/resources/application-spring-listener-acks.yml)
+**Demo:** `spring-listener-acks` · [ListenerAcksDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/ListenerAcksDemo.java) · [application-spring-listener-acks.yml](../spring-boot-kafka/src/main/resources/application-spring-listener-acks.yml) · **Recipes:** [AckModeListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/recipe/AckModeListeners.java), [ReplayListener.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/recipe/ReplayListener.java), [ListenerRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/recipe/ListenerRecipe.java)
 
 ## The problem
 
@@ -44,6 +44,70 @@ flowchart LR
 | `@KafkaListener(id, groupId, clientIdPrefix, topics, properties, concurrency, autoStartup)` | | `id` doubles as `groupId` unless `idIsGroup=false`; `properties = "max.poll.records:5"` overrides consumer configs for that listener |
 | `spring.kafka.listener.auto-startup` | `true` | this repository sets `false` and starts listeners through `KafkaListenerEndpointRegistry` after seeding |
 | `@Header(KafkaHeaders.RECEIVED_PARTITION)` etc. | | metadata as method parameters, when you do not want the whole `ConsumerRecord` |
+
+## The code that matters
+
+When a listener commits is one attribute, `ackMode`. From
+[AckModeListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/recipe/AckModeListeners.java)
+(`probe.*` calls are the demo's measurement; your processing goes there):
+
+<!-- recipe: spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/recipe/AckModeListeners.java -->
+```java
+@KafkaListener(id = "acks-batch", groupId = "spring-acks-batch", clientIdPrefix = "acks-batch", topics = TopicsConfig.LISTENER, ackMode = "BATCH")
+public void batch(ConsumerRecord<String, String> record) {
+    probe.hit("acks-batch");
+}
+// ...
+@KafkaListener(id = "acks-nack", groupId = "spring-acks-nack", clientIdPrefix = "acks-nack", ackMode = "MANUAL",
+        properties = "max.poll.records:5",
+        topicPartitions = @TopicPartition(topic = TopicsConfig.LISTENER,
+                partitionOffsets = @PartitionOffset(partition = "0", initialOffset = "0")))
+public void nack(ConsumerRecord<String, String> record, Acknowledgment ack) {
+    if (probe.nackOnce(record)) {   // the demo's script: offset 3, first delivery only
+        ack.nack(Duration.ofSeconds(1));   // commit what was acked, drop the rest of this poll, seek back to this record, pause 1 s
+    } else {
+        ack.acknowledge();
+    }
+}
+```
+
+replay on assignment, from [ReplayListener.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/recipe/ReplayListener.java):
+
+<!-- recipe: spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/recipe/ReplayListener.java -->
+```java
+public void onPartitionsAssigned(Map<TopicPartition, Long> assignments, ConsumerSeekCallback callback) {
+    assignments.keySet().forEach(tp -> callback.seekRelative(tp.topic(), tp.partition(), -100, false));
+}
+```
+
+and the two beans in front of the listener, from [ListenerRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/recipe/ListenerRecipe.java):
+
+<!-- recipe: spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/recipe/ListenerRecipe.java -->
+```java
+@Bean
+RecordFilterStrategy<String, String> oddOffsetFilter() {
+    return record -> record.offset() % 2 == 1;   // true = discard
+}
+
+/** A {@code RecordInterceptor<Object, Object>}: Boot wires it into the default factory, so it runs before EVERY listener. */
+@Bean
+CountingRecordInterceptor countingInterceptor() {
+    return new CountingRecordInterceptor();
+}
+```
+
+- **`ackMode = "BATCH"`** (the default) committed 12 times for 6 000 records; `RECORD` committed 6 000 times and took
+  15.8 s instead of ~110 ms.
+- **`nack(Duration)`** is "retry this record after a pause" without seeking by hand: offset 3 came back after 1 015 ms,
+  and offset 4 of the same poll was never delivered before it.
+- **`seekRelative(-100)` on assignment** replayed exactly the last 100 records of each partition, whatever the group
+  had committed; MANUAL without `acknowledge()` left the committed offsets alone.
+- **The generic type is the switch**: the filter is typed `<String, String>` and only applies where named
+  (`filter = "oddOffsetFilter"`), the `<Object, Object>` interceptor is global.
+
+The demo starts each listener in turn; everything else in
+[ListenerAcksDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/ListenerAcksDemo.java) and
+[ListenerProbe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/ListenerProbe.java) is measurement.
 
 ## Run it
 

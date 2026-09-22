@@ -1,4 +1,4 @@
-package io.kafkatweaks.producer;
+package io.kafkatweaks.producer.recipe;
 
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.Node;
@@ -16,7 +16,7 @@ class TenantPartitionerTest {
 
     private static final String TOPIC = "t";
     private static final Cluster CLUSTER = cluster(6);
-    private final ProducerPartitioningDemo.TenantPartitioner partitioner = new ProducerPartitioningDemo.TenantPartitioner();
+    private final TenantPartitioner partitioner = new TenantPartitioner();
 
     @Test
     void vipKeysAlwaysGoToPartitionZero() {

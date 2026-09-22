@@ -1,4 +1,4 @@
-package io.kafkatweaks.spring.errors;
+package io.kafkatweaks.spring.errors.recipe;
 
 import io.kafkatweaks.common.Order;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -17,7 +17,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * The template {@code DeadLetterPublishingRecoverer} publishes with. It cannot be the auto-configured one: a
+ * Chapter 18 · The template {@code DeadLetterPublishingRecoverer} publishes with. It cannot be the auto-configured one: a
  * record that failed in the deserializer reaches the recoverer as the ORIGINAL {@code byte[]}, a record that
  * failed in the listener as the deserialized {@link Order}, and a {@code JacksonJsonSerializer} would choke on
  * the bytes. {@link DelegatingByTypeSerializer} picks a serializer per value class.

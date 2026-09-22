@@ -2,6 +2,7 @@ package io.kafkatweaks.avro;
 
 import io.kafkatweaks.Demo;
 import io.kafkatweaks.avro.generated.Order;
+import io.kafkatweaks.avro.recipe.AvroClients;
 import io.kafkatweaks.common.Args;
 import io.kafkatweaks.common.Env;
 import io.kafkatweaks.common.JsonSerde;
@@ -14,17 +15,12 @@ import io.confluent.kafka.schemaregistry.client.SchemaMetadata;
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException;
 import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig;
-import io.confluent.kafka.serializers.KafkaAvroDeserializer;
-import io.confluent.kafka.serializers.KafkaAvroDeserializerConfig;
-import io.confluent.kafka.serializers.KafkaAvroSerializer;
-import io.confluent.kafka.serializers.subject.RecordNameStrategy;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 
@@ -36,7 +32,8 @@ import java.util.Properties;
 import java.util.concurrent.ExecutionException;
 
 /**
- * Chapter 13: Confluent Avro serialization with the Schema Registry.
+ * Chapter 13: Confluent Avro serialization with the Schema Registry. Measures {@link AvroClients} and {@link AvroTrust};
+ * everything else in this file is measurement.
  * <ol>
  *   <li>round trip with generated {@code SpecificRecord} classes; wire size vs JSON; what the first send costs</li>
  *   <li>the serializer knobs: auto.register.schemas, subject name strategies, use.latest.version</li>
@@ -126,9 +123,7 @@ public final class AvroDemo implements Demo {
 
     private static Order consumeSpecific(Args args, int expected) {
         Properties props = Env.consumer("avro-" + System.nanoTime(), "avro-consumer");
-        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, KafkaAvroDeserializer.class.getName());
-        props.put(AbstractKafkaSchemaSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG, Env.schemaRegistryUrl());
-        props.put(KafkaAvroDeserializerConfig.SPECIFIC_AVRO_READER_CONFIG, "true");
+        props.putAll(AvroClients.specificConsumer(Env.schemaRegistryUrl()));   // <- the recipe under test
         args.applyOverrides(props);
         Order first = null;
         int n = 0;
@@ -182,15 +177,14 @@ public final class AvroDemo implements Demo {
         }
 
         Properties recordName = avroProducerProps(args, "avro-recordname");
-        recordName.put(AbstractKafkaSchemaSerDeConfig.VALUE_SUBJECT_NAME_STRATEGY, RecordNameStrategy.class.getName());
+        recordName.putAll(AvroClients.recordNameSubjects());
         try (var producer = new KafkaProducer<String, Order>(recordName)) {
             producer.send(new ProducerRecord<>(TOPIC, "k", order(2))).get();
         }
         table.row("value.subject.name.strategy=RecordNameStrategy", "registered under subject '" + Order.getClassSchema().getFullName() + "'");
 
         Properties latest = avroProducerProps(args, "avro-latest");
-        latest.put(AbstractKafkaSchemaSerDeConfig.AUTO_REGISTER_SCHEMAS, "false");
-        latest.put(AbstractKafkaSchemaSerDeConfig.USE_LATEST_VERSION, "true");
+        latest.putAll(AvroClients.productionProducer(Env.schemaRegistryUrl()));   // <- the recipe under test
         try (var producer = new KafkaProducer<String, Order>(latest)) {
             producer.send(new ProducerRecord<>(TOPIC, "k", order(3))).get();
         }
@@ -217,9 +211,7 @@ public final class AvroDemo implements Demo {
 
         System.out.println("\nreading the v1 records with the LATEST schema (v2) as reader schema, as a GenericRecord:");
         Properties props = Env.consumer("avro-generic-" + System.nanoTime(), "avro-generic");
-        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, KafkaAvroDeserializer.class.getName());
-        props.put(AbstractKafkaSchemaSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG, Env.schemaRegistryUrl());
-        props.put(AbstractKafkaSchemaSerDeConfig.USE_LATEST_VERSION, "true");
+        props.putAll(AvroClients.latestSchemaConsumer(Env.schemaRegistryUrl()));
         props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "1");
         args.applyOverrides(props);
         try (var consumer = new KafkaConsumer<String, GenericRecord>(props)) {
@@ -269,8 +261,7 @@ public final class AvroDemo implements Demo {
 
     private static Properties avroProducerProps(Args args, String clientId) {
         Properties p = Env.producer(clientId);
-        p.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class.getName());
-        p.put(AbstractKafkaSchemaSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG, Env.schemaRegistryUrl());
+        p.putAll(AvroClients.producer(Env.schemaRegistryUrl()));
         return args.applyOverrides(p);
     }
 

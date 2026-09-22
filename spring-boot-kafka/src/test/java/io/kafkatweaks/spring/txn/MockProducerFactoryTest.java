@@ -1,6 +1,7 @@
 package io.kafkatweaks.spring.txn;
 
 import io.kafkatweaks.spring.TopicsConfig;
+import io.kafkatweaks.spring.txn.recipe.OrderTransfer;
 import org.apache.kafka.clients.producer.MockProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.StringSerializer;

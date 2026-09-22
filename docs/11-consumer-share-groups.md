@@ -1,6 +1,6 @@
 # 11 · Queues for Kafka: share groups
 
-**Demo:** `consumer-share` · [ConsumerShareDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerShareDemo.java)
+**Demo:** `consumer-share` · [ConsumerShareDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerShareDemo.java) · **Recipe:** [ShareWorker.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/ShareWorker.java)
 
 ## The problem
 
@@ -59,6 +59,54 @@ sequenceDiagram
 
 Group-level configs are set with `kafka-configs --entity-type groups --entity-name <group> --alter --add-config ...`
 or `Admin.incrementalAlterConfigs` on a `ConfigResource.Type.GROUP`, as the demo does.
+
+## The code that matters
+
+A `KafkaShareConsumer` with `ShareWorker.explicitAcks()`, the group settings set once, and a loop that decides per
+record. From [ShareWorker.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/ShareWorker.java):
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/ShareWorker.java -->
+```java
+public static Map<String, String> groupSettings(String autoOffsetReset, Duration lockDuration, int deliveryLimit) {
+    return Map.of(
+            "share.auto.offset.reset", autoOffsetReset,
+            "share.record.lock.duration.ms", String.valueOf(lockDuration.toMillis()),
+            "share.delivery.count.limit", String.valueOf(deliveryLimit));
+}
+// ...
+public int pollOnce(Duration timeout) {
+    ConsumerRecords<K, V> batch = consumer.poll(timeout);
+    if (batch.isEmpty()) {
+        return 0;
+    }
+    for (ConsumerRecord<K, V> record : batch) {
+        AcknowledgeType outcome;
+        try {
+            outcome = decider.decide(record);   // record.deliveryCount() says how many times it was delivered before
+        } catch (Exception e) {
+            outcome = AcknowledgeType.RELEASE;   // retry; after share.delivery.count.limit deliveries it is archived
+        }
+        consumer.acknowledge(record, outcome);
+    }
+    // Sends the acknowledgements and reports the outcome per partition; an error means those acks were not applied.
+    consumer.commitSync().forEach((partition, error) -> error.ifPresent(e -> onCommitError.accept(partition, e)));
+    return batch.count();
+}
+```
+
+- **The decider is the whole queue policy**: `ACCEPT` done, `RELEASE` try again (any member, `deliveryCount` + 1),
+  `REJECT` never again. With every 50th record rejected and every 7th released once: 2 940 accepted + 60 rejected =
+  3 000, and the 420 released ones came back with `deliveryCount` 2.
+- **The group settings are not client configs.** `ShareWorker.configureGroup(admin, group, groupSettings(...))` sets
+  them with `Admin.incrementalAlterConfigs` on the GROUP, like `kafka-configs --entity-type groups`.
+- **Size `share.record.lock.duration.ms` above your slowest honest handler**: part 3 shows what happens to a consumer
+  that goes silent (its records go to the others with `deliveryCount` 2).
+- Implicit mode (part 1) is the easy path: the next `poll()` or `commitSync()` ACCEPTs everything; commit the last
+  poll before closing, or those records come back to someone else after the lock expires.
+
+The demo's explicit part runs through `ShareWorker` with its scripted policy as the decider; the implicit and lock
+parts use the consumer directly. Everything else in
+[ConsumerShareDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerShareDemo.java) is measurement.
 
 ## Run it
 

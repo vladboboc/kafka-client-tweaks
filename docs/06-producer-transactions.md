@@ -1,6 +1,6 @@
 # 06 · Transactions and exactly-once
 
-**Demo:** `producer-transactions` · [ProducerTransactionsDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerTransactionsDemo.java)
+**Demo:** `producer-transactions` · [ProducerTransactionsDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerTransactionsDemo.java) · **Recipe:** [ExactlyOnceProcessor.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ExactlyOnceProcessor.java)
 
 ## The problem
 
@@ -40,6 +40,51 @@ sequenceDiagram
 | `isolation.level` (consumer) | **`read_uncommitted`** | `read_committed` hides records of open and aborted transactions; opt in explicitly |
 | `enable.auto.commit` (consumer, in a transactional processor) | `true` | must be `false`: offsets travel inside the transaction via `sendOffsetsToTransaction` |
 | broker `transaction.state.log.replication.factor` / `.min.isr` | 3 / 2 | the transaction log is a topic like any other; this stack sets both |
+
+## The code that matters
+
+One poll = one transaction, from [ExactlyOnceProcessor.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ExactlyOnceProcessor.java).
+The producer is made with `transactional(props, stableId, timeout)`, the consumer with `readCommitted(props, groupId)`,
+and `producer.initTransactions()` runs once at startup:
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ExactlyOnceProcessor.java -->
+```java
+public static <K, V, K2, V2> boolean processBatch(Consumer<K, V> consumer, Producer<K2, V2> producer, ConsumerRecords<K, V> batch,
+                                                  Function<ConsumerRecord<K, V>, ProducerRecord<K2, V2>> transform) {
+    producer.beginTransaction();
+    try {
+        for (ConsumerRecord<K, V> record : batch) {
+            producer.send(transform.apply(record));
+        }
+        // The input offsets become part of the transaction: committed together with the output, or never.
+        producer.sendOffsetsToTransaction(nextOffsets(batch), consumer.groupMetadata());
+        producer.commitTransaction();
+        return true;
+    } catch (ProducerFencedException | OutOfOrderSequenceException | AuthorizationException fatal) {
+        throw fatal;   // another instance took over this transactional.id: close this producer and stop
+    } catch (KafkaException e) {
+        producer.abortTransaction();   // the output of this batch is discarded ...
+        rewind(consumer, batch);       // ... and the batch is read again
+        return false;
+    }
+}
+```
+
+- **`sendOffsetsToTransaction`** is the exactly-once part: the input offsets commit with the output. The crashed
+  batch below was neither committed nor aborted, its offsets were never committed, and the successor re-read it:
+  2 000 in, 2 000 out, 0 duplicates.
+- **A stable `transactional.id`** (`transactional(props, "orders-enricher-0", ...)`) is what lets the successor's
+  `initTransactions()` fence the crashed instance: its next commit fails as a zombie.
+- **A transaction per poll, not per record.** A commit is a handful of round trips: one record per transaction ran
+  at 21 records/s, 1 000 per transaction at 12.5K.
+- **`readCommitted(...)`** turns auto-commit off (offsets travel in the transaction) and makes the input side skip
+  aborted data. `ExactlyOnceProcessor.sendAtomically(producer, records)` is the same without a consumer: several
+  writes, all or none.
+
+The demo's processors call `processBatch`, and the crash is a transform that throws after 1 000 records (not a
+`KafkaException`, so the transaction is left open exactly like a JVM crash). Everything else in
+[ProducerTransactionsDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerTransactionsDemo.java)
+is measurement. The recipe is also unit-tested with `MockProducer`/`MockConsumer` (`ExactlyOnceProcessorTest`).
 
 ## Run it
 

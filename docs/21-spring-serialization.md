@@ -1,6 +1,6 @@
 # 21 · Serialization in Spring: JSON and Avro
 
-**Demo:** `spring-serdes` · [SerdesDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/SerdesDemo.java) · [SerdesListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/SerdesListeners.java) · [SerdesConfig.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/SerdesConfig.java) · [application-spring-serdes.yml](../spring-boot-kafka/src/main/resources/application-spring-serdes.yml)
+**Demo:** `spring-serdes` · [SerdesDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/SerdesDemo.java) · [application-spring-serdes.yml](../spring-boot-kafka/src/main/resources/application-spring-serdes.yml) · **Recipes:** [SerdesConfig.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/recipe/SerdesConfig.java), [SerdesListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/recipe/SerdesListeners.java)
 
 ## The problem
 
@@ -42,6 +42,56 @@ flowchart LR
 | `DelegatingByTypeSerializer` / `DelegatingByTopicSerializer` | producer | | one template, several value types or topics with different formats (chapter 18's dead-letter template uses the first) |
 | `KafkaAvroSerializer` / `KafkaAvroDeserializer` + `spring.kafka.properties[schema.registry.url]`, `consumer.properties[specific.avro.reader]`, `producer.properties[auto.register.schemas]` | both | | chapter 13's serializers, configured through the same maps; `AvroTrust.trustGeneratedClasses()` before the first Avro send (the serializer resolves the class too) |
 | a second producer/consumer factory | code | | formats differ per topic: build the factory from `KafkaProperties.buildProducerProperties()` / `buildConsumerProperties()` with the serializer swapped, and a container factory through Boot's `ConcurrentKafkaListenerContainerFactoryConfigurer` so `spring.kafka.listener.*` still applies. Extra `KafkaTemplate`s stay non-beans (chapter 15) |
+
+## The code that matters
+
+The default serialization is yml only, from [application-spring-serdes.yml](../spring-boot-kafka/src/main/resources/application-spring-serdes.yml):
+
+<!-- recipe: spring-boot-kafka/src/main/resources/application-spring-serdes.yml -->
+```yaml
+producer:
+  client-id: spring-serdes
+  value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer
+  properties:
+    # The __TypeId__ header carries a token instead of the class name, so consumers need not have (or know) our class.
+    "[spring.json.type.mapping]": order:io.kafkatweaks.common.Order
+# ...
+consumer:
+  client-id: spring-serdes
+  value-deserializer: org.springframework.kafka.support.serializer.JacksonJsonDeserializer
+  properties:
+    # Classes the deserializer may instantiate from a header (the header is data from the producer, i.e. untrusted input).
+    "[spring.json.trusted.packages]": io.kafkatweaks.common,io.kafkatweaks.spring.serdes
+    # Token -> class, the consumer-side half of the producer's mapping. Listeners override it per consumer (SerdesListeners).
+    "[spring.json.type.mapping]": order:io.kafkatweaks.common.Order
+```
+
+and a listener that wants another type says so in its attributes, from
+[SerdesListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/recipe/SerdesListeners.java):
+
+<!-- recipe: spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/recipe/SerdesListeners.java -->
+```java
+@KafkaListener(id = "serdes-view", groupId = "spring-serdes-view", topics = TopicsConfig.SERDES,
+        properties = {"spring.json.use.type.headers:false", "spring.json.value.default.type:io.kafkatweaks.spring.serdes.OrderView"})
+public void view(ConsumerRecord<String, OrderView> record) {
+    probe.note("serdes-view", record.value(), record.headers());
+}
+```
+
+- **A token in the `__TypeId__` header** (`order`), mapped to a class on each side: the consumer never needs the
+  producer's class name, and `serdes-mapped` maps the same token to its own `OrderView`.
+- **Per-listener `properties`** override the deserializer settings for one listener only: `serdes-view` ignores the
+  header and always reads `OrderView`.
+- **Other formats need another factory**, built from the same properties with the (de)serializer swapped, in
+  [SerdesConfig.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/recipe/SerdesConfig.java):
+  `converterContainerFactory` (String + `JacksonJsonMessageConverter`, the method parameter picks the type),
+  `avroContainerFactory` (Confluent Avro in) and `avroProducerFactory(properties, clientId)` (Avro out, not a bean).
+- **Avro was 37.4 bytes per record against 129 + 15 bytes of header for JSON.** The generated classes must be
+  trusted first (`AvroTrust`, chapter 13): the first Avro send fails until they are.
+
+The demo sends, starts the listeners and compares what each received; everything else in
+[SerdesDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/SerdesDemo.java) and
+[SerdesProbe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/SerdesProbe.java) is measurement.
 
 ## Run it
 

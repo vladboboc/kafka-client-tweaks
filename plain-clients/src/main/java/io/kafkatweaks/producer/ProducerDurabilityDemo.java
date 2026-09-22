@@ -7,6 +7,7 @@ import io.kafkatweaks.common.Knobs;
 import io.kafkatweaks.common.Table;
 import io.kafkatweaks.common.Topics;
 import io.kafkatweaks.common.Workload;
+import io.kafkatweaks.producer.recipe.DurableProducer;
 import org.apache.kafka.clients.admin.TopicDescription;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -16,14 +17,15 @@ import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.config.ConfigException;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.ExecutionException;
 
 /**
- * Chapter 03: durability, ordering and retries.
+ * Chapter 03: durability, ordering and retries. Measures {@link DurableProducer}; everything else in this file is
+ * measurement.
  * <ol>
  *   <li>acks=0 / 1 / all on the same workload: what each costs and what each promises.</li>
  *   <li>The timeout chain: delivery.timeout.ms must cover linger.ms + request.timeout.ms.</li>
@@ -51,8 +53,8 @@ public final class ProducerDurabilityDemo implements Demo {
         int size = args.getInt("size", 512);
 
         try (var topics = new Topics()) {
-            topics.ensure(TOPIC_ACKS, 3, Map.of("min.insync.replicas", "2"));
-            topics.ensure(TOPIC_RF2, 1, 2, Map.of("min.insync.replicas", "2"));
+            topics.ensure(TOPIC_ACKS, 3, DurableProducer.minInSyncReplicas(2));
+            topics.ensure(TOPIC_RF2, 1, 2, DurableProducer.minInSyncReplicas(2));   // RF=2: one broker down = too few replicas
         }
 
         if (!args.getBool("skip-acks", false)) {
@@ -70,13 +72,11 @@ public final class ProducerDurabilityDemo implements Demo {
         Workload.warmUp(TOPIC_ACKS);
         var results = new ArrayList<Workload.Result>();
         // enable.idempotence defaults to true and REQUIRES acks=all; the client refuses acks=0/1 with it on.
-        results.add(Workload.run("acks=0", props(args, "acks-0", Map.of(ProducerConfig.ACKS_CONFIG, "0",
-                ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "false")), TOPIC_ACKS, records, size, Workload.Payload.JSON, 0));
-        results.add(Workload.run("acks=1", props(args, "acks-1", Map.of(ProducerConfig.ACKS_CONFIG, "1",
-                ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "false")), TOPIC_ACKS, records, size, Workload.Payload.JSON, 0));
+        results.add(Workload.run("acks=0", props(args, "acks-0", DurableProducer.fireAndForget()), TOPIC_ACKS, records, size, Workload.Payload.JSON, 0));
+        results.add(Workload.run("acks=1", props(args, "acks-1", DurableProducer.leaderOnly()), TOPIC_ACKS, records, size, Workload.Payload.JSON, 0));
         results.add(Workload.run("acks=all, no idempotence", props(args, "acks-all-plain", Map.of(ProducerConfig.ACKS_CONFIG, "all",
                 ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "false")), TOPIC_ACKS, records, size, Workload.Payload.JSON, 0));
-        results.add(Workload.run("acks=all + idempotence (default)", props(args, "acks-all-idem", Map.of()),
+        results.add(Workload.run("acks=all + idempotence (default)", props(args, "acks-all-idem", DurableProducer.durable()),
                 TOPIC_ACKS, records, size, Workload.Payload.JSON, 0));
         Workload.printComparison(results);
 
@@ -134,7 +134,7 @@ public final class ProducerDurabilityDemo implements Demo {
         int waitSeconds = args.getInt("wait", 90);
 
         try (var topics = new Topics()) {
-            TopicDescription d = topics.describe(TOPIC_RF2).orElseThrow();
+            TopicDescription d = topics.describeExisting(TOPIC_RF2);
             topics.printPartitions(TOPIC_RF2);
             var partition = d.partitions().getFirst();
             // Stop a follower, not the leader: the outcome is the same (ISR drops to 1 < min.insync.replicas)
@@ -185,13 +185,9 @@ public final class ProducerDurabilityDemo implements Demo {
     /** One send with a short delivery budget so a refused write shows up in seconds rather than minutes. */
     private static void sendOne(String phase, String topic, String acks) {
         var props = Env.producer("isr-acks-" + acks);
-        props.put(ProducerConfig.ACKS_CONFIG, acks);
-        if (!acks.equals("all")) {
-            props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "false");
-        }
-        props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, "3000");
-        props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, "8000");
-        props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, "10000");
+        // The recipe under test: durable() vs leaderOnly(), both with a short delivery budget.
+        props.putAll(acks.equals("all") ? DurableProducer.durable() : DurableProducer.leaderOnly());
+        props.putAll(DurableProducer.failFast(Duration.ofSeconds(3), Duration.ofSeconds(8), Duration.ofSeconds(10)));
         long t0 = System.nanoTime();
         try (var producer = new KafkaProducer<String, String>(props)) {
             RecordMetadata md = producer.send(new ProducerRecord<>(topic, "k", "phase=" + phase)).get();
@@ -232,7 +228,7 @@ public final class ProducerDurabilityDemo implements Demo {
         }
     }
 
-    private static Properties props(Args args, String clientId, Map<String, String> overrides) {
+    private static Properties props(Args args, String clientId, Map<String, ?> overrides) {
         var p = Env.producer("durability-" + clientId);
         p.putAll(overrides);
         return args.applyOverrides(p);

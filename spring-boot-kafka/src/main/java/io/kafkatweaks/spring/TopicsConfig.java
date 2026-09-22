@@ -30,6 +30,8 @@ public class TopicsConfig {
     public static final String TXN_IN = "spring.txn-in";
     public static final String TXN_OUT = "spring.txn-out";
     public static final String QUEUE = "spring.queue";
+    /** One partition, so that the consumer threads of a lock demo are necessarily fed from the same partition (created by the demo). */
+    public static final String QUEUE_LOCKS = "spring.queue-locks";
     public static final String SERDES = "spring.serdes";
     public static final String AVRO = "spring.avro";
 

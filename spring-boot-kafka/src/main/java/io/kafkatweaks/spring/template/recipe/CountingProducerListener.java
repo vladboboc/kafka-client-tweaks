@@ -1,4 +1,4 @@
-package io.kafkatweaks.spring.template;
+package io.kafkatweaks.spring.template.recipe;
 
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
@@ -7,7 +7,7 @@ import org.springframework.kafka.support.ProducerListener;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * A {@link ProducerListener} bean replaces Boot's {@code LoggingProducerListener} and is called by the
+ * Chapter 15 · A {@link ProducerListener} bean replaces Boot's {@code LoggingProducerListener} and is called by the
  * auto-configured {@code KafkaTemplate} for every acknowledgement: the place for send metrics, audit
  * counters or alerting on failures, without touching the call sites.
  */

@@ -8,8 +8,9 @@ import io.kafkatweaks.common.Payloads;
 import io.kafkatweaks.common.Table;
 import io.kafkatweaks.common.Topics;
 import io.kafkatweaks.common.Workload;
+import io.kafkatweaks.producer.recipe.LowLatencyProducer;
+import io.kafkatweaks.producer.recipe.ThroughputProducer;
 import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 
@@ -20,7 +21,8 @@ import java.util.Properties;
 import java.util.concurrent.locks.LockSupport;
 
 /**
- * Chapter 05: latency first. Two workloads that look nothing like chapter 02's firehose:
+ * Chapter 05: latency first. Measures {@link LowLatencyProducer}; everything else in this file is measurement.
+ * Two workloads that look nothing like chapter 02's firehose:
  * <ol>
  *   <li>request/response style: one record at a time, wait for the ack, measure it</li>
  *   <li>a paced stream (N records/s) with async sends, measuring the ack latency of each record</li>
@@ -37,15 +39,14 @@ public final class ProducerLowLatencyDemo implements Demo {
 
     private static final String TOPIC = "tweaks.latency";
 
-    static final Map<String, Map<String, String>> PRESETS = new LinkedHashMap<>();
+    static final Map<String, Map<String, ?>> PRESETS = new LinkedHashMap<>();
 
     static {
-        PRESETS.put("throughput-tuned (linger=50, zstd)", Map.of(
-                ProducerConfig.LINGER_MS_CONFIG, "50", ProducerConfig.BATCH_SIZE_CONFIG, "131072", ProducerConfig.COMPRESSION_TYPE_CONFIG, "zstd"));
+        // From "everything for throughput" (chapter 02) to the recipe under test.
+        PRESETS.put("throughput-tuned (linger=50, zstd)", ThroughputProducer.batching(50, 128 * 1024, "zstd"));
         PRESETS.put("defaults (linger=5)", Map.of());
-        PRESETS.put("linger=0", Map.of(ProducerConfig.LINGER_MS_CONFIG, "0"));
-        PRESETS.put("linger=0, acks=1", Map.of(
-                ProducerConfig.LINGER_MS_CONFIG, "0", ProducerConfig.ACKS_CONFIG, "1", ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "false"));
+        PRESETS.put("linger=0", LowLatencyProducer.lowLatency());
+        PRESETS.put("linger=0, acks=1", LowLatencyProducer.lowLatencyLeaderAck());
     }
 
     @Override
@@ -87,7 +88,7 @@ public final class ProducerLowLatencyDemo implements Demo {
     private static long[] sequential(Properties props, int records, int size) {
         var lat = new long[records];
         try (var producer = new KafkaProducer<String, String>(props)) {
-            producer.partitionsFor(TOPIC);
+            LowLatencyProducer.warmUp(producer, TOPIC);
             for (int i = 0; i < records; i++) {
                 long t0 = System.nanoTime();
                 try {
@@ -107,7 +108,7 @@ public final class ProducerLowLatencyDemo implements Demo {
         var lat = new long[total];
         long intervalNanos = rate > 0 ? 1_000_000_000L / rate : 0;   // rate=0: unpaced, so there is nothing to send here
         try (var producer = new KafkaProducer<String, String>(props)) {
-            producer.partitionsFor(TOPIC);
+            LowLatencyProducer.warmUp(producer, TOPIC);
             long next = System.nanoTime();
             for (int i = 0; i < total; i++) {
                 while (System.nanoTime() < next) {
@@ -144,7 +145,7 @@ public final class ProducerLowLatencyDemo implements Demo {
         return Workload.percentileMs(sorted, p);   // shared, and NaN instead of an exception for an empty run
     }
 
-    private static Properties props(Args args, String clientId, Map<String, String> overrides) {
+    private static Properties props(Args args, String clientId, Map<String, ?> overrides) {
         var p = Env.producer("latency-" + clientId);
         p.putAll(overrides);
         return args.applyOverrides(p);

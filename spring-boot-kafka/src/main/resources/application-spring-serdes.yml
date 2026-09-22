@@ -27,8 +27,9 @@ spring:
 
 logging:
   level:
-    # The demo's first Avro send fails on purpose (untrusted generated class) and reports it itself; without this the
-    # template's LoggingProducerListener adds an ERROR with a stack trace.
+    # DEMO ONLY: in a service these ERRORs are exactly what you want to see. The demo's first Avro send fails on
+    # purpose (untrusted generated class) and reports it itself; without this the template's LoggingProducerListener
+    # adds an ERROR with a stack trace.
     org.springframework.kafka.support.LoggingProducerListener: "OFF"
 
 # An Avro-only application would instead put this on the default factories:

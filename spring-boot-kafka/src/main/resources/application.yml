@@ -11,8 +11,9 @@ spring:
     consumer:
       auto-offset-reset: earliest
     listener:
-      # Containers normally start during the context refresh, BEFORE any ApplicationRunner. The demos seed their
-      # topics first and then start their listeners through KafkaListenerEndpointRegistry (chapter 16).
+      # DEMO ONLY (a service wants the default, true). Containers normally start during the context refresh, BEFORE
+      # any ApplicationRunner. The demos seed their topics first and then start their listeners through
+      # KafkaListenerEndpointRegistry (chapter 16).
       auto-startup: false
     admin:
       # A stack that is down should fail the demo within 10 s instead of hanging: fail-fast is bounded by the

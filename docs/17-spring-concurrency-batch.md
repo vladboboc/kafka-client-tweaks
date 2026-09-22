@@ -1,6 +1,6 @@
 # 17 · Concurrency, batch listeners and back-pressure
 
-**Demo:** `spring-concurrency` · [ConcurrencyDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/ConcurrencyDemo.java) · [ParallelListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/ParallelListeners.java) · [application-spring-concurrency.yml](../spring-boot-kafka/src/main/resources/application-spring-concurrency.yml)
+**Demo:** `spring-concurrency` · [ConcurrencyDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/ConcurrencyDemo.java) · [application-spring-concurrency.yml](../spring-boot-kafka/src/main/resources/application-spring-concurrency.yml) · **Recipes:** [ParallelListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/recipe/ParallelListeners.java), [ConcurrencyRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/recipe/ConcurrencyRecipe.java), [BackPressure.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/recipe/BackPressure.java)
 
 ## The problem
 
@@ -42,6 +42,67 @@ flowchart LR
 | a second `ConcurrentKafkaListenerContainerFactory` bean + `ConcurrentKafkaListenerContainerFactoryConfigurer` | | Boot's `spring.kafka.listener.*` applied, then your `ContainerProperties` on top (`asyncAcks`, `deliveryAttemptHeader`, `pauseImmediate`, `micrometerTags`); listeners choose it with `containerFactory` |
 | `@KafkaListener(properties = "max.partition.fetch.bytes:16384")` | | per-listener consumer configs, here chapter 10's trick to make one poll span all partitions |
 | `spring.kafka.consumer.properties[group.instance.id]` | | static membership; concurrent containers suffix `-n` automatically |
+
+## The code that matters
+
+Most of it is attributes, from [ParallelListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/recipe/ParallelListeners.java)
+(`probe.*` calls are the demo's simulated work and measurement):
+
+<!-- recipe: spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/recipe/ParallelListeners.java -->
+```java
+@KafkaListener(id = "par-6", groupId = "spring-par-6", clientIdPrefix = "par-6", topics = TopicsConfig.PARALLEL, concurrency = "6")
+public void six(ConsumerRecord<String, String> record) {
+    probe.work();
+    probe.done("par-6", 1);
+}
+// ...
+@KafkaListener(id = "par-batch", groupId = "spring-par-batch", clientIdPrefix = "par-batch", topics = TopicsConfig.PARALLEL, batch = "true")
+public void batch(List<ConsumerRecord<String, String>> records) {
+    probe.bulkWrite(records.size());   // the cost model of a bulk write: one round trip per CALL, not one per record
+    probe.done("par-batch", records.size());
+}
+// ...
+@KafkaListener(id = "par-async", groupId = "spring-par-async", clientIdPrefix = "par-async", topics = TopicsConfig.PARALLEL,
+        concurrency = "1", ackMode = "MANUAL", containerFactory = "asyncAckContainerFactory",
+        properties = "max.partition.fetch.bytes:16384")   // small per-partition fetches => a poll mixes all partitions (chapter 10)
+public void async(ConsumerRecord<String, String> record, Acknowledgment ack) {
+    // ...
+    partitionWorkers.computeIfAbsent(record.partition(),
+                    p -> Executors.newSingleThreadExecutor(Thread.ofVirtual().name("worker-p" + p).factory()))
+            .execute(() -> {
+                probe.work();
+                // ...
+                ack.acknowledge();
+                probe.done("par-async", 1);
+            });
+}
+```
+
+plus one container factory, from [ConcurrencyRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/recipe/ConcurrencyRecipe.java):
+
+<!-- recipe: spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/recipe/ConcurrencyRecipe.java -->
+```java
+var factory = new ConcurrentKafkaListenerContainerFactory<Object, Object>();
+configurer.configure(factory, consumerFactory);
+// Acknowledgements may arrive in any order; the container commits contiguous prefixes and pauses the
+// consumer until every record of the poll is acknowledged. Requires ackMode MANUAL or MANUAL_IMMEDIATE.
+factory.getContainerProperties().setAsyncAcks(true);
+return factory;
+```
+
+- **`concurrency = "6"`** on 6 partitions drained the topic 4× faster than one consumer (2 098 vs 501 records/s);
+  `concurrency = "8"` added nothing, two of its consumers got no partition.
+- **`batch = "true"`** with a bulk-write cost of 2 ms per call: 83 105 records/s, because the cost is paid per poll.
+- **`asyncAcks` + per-partition workers**: one consumer thread reached 1 608 records/s, ordering per partition kept.
+  The container pauses the consumer until every record of a poll is acknowledged (187 pause/resume pairs).
+- **`BackPressure.pause(id)` / `resume(id)`**
+  ([BackPressure.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/recipe/BackPressure.java)):
+  0 records in 2 s of pause, the consumer stayed in the group, delivery continued after resume.
+- Virtual threads for every container are one line of yml: `spring.threads.virtual.enabled: true`.
+
+The demo starts each listener in turn; everything else in
+[ConcurrencyDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/ConcurrencyDemo.java) and
+[ParallelProbe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/ParallelProbe.java) is measurement.
 
 ## Run it
 

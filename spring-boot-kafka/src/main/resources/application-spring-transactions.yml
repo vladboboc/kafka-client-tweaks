@@ -18,6 +18,7 @@ spring:
 
 logging:
   level:
-    # Boot's LoggingProducerListener logs every record whose batch is failed by a rollback ("Failing batch since
-    # transaction was aborted"), one ERROR per record. Expected in this chapter; the demo reports the outcome itself.
+    # DEMO ONLY: in a service these ERRORs are exactly what you want to see. Boot's LoggingProducerListener logs
+    # every record whose batch is failed by a rollback ("Failing batch since transaction was aborted"), one ERROR per
+    # record. Expected in this chapter; the demo reports the outcome itself.
     org.springframework.kafka.support.LoggingProducerListener: "OFF"

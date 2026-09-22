@@ -7,6 +7,7 @@ import io.kafkatweaks.common.Knobs;
 import io.kafkatweaks.common.Payloads;
 import io.kafkatweaks.common.Table;
 import io.kafkatweaks.common.Topics;
+import io.kafkatweaks.consumer.recipe.ShareWorker;
 import org.apache.kafka.clients.admin.ShareGroupDescription;
 import org.apache.kafka.clients.consumer.AcknowledgeType;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -26,6 +27,7 @@ import java.util.Properties;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -34,6 +36,7 @@ import java.util.stream.Collectors;
  * Chapter 11: Queues for Kafka (KIP-932, production-ready since Kafka 4.2). A share group hands records of
  * the same partition to many consumers at once, tracks per-record acknowledgement and delivery counts,
  * and re-delivers what was released or left unacknowledged. Partitions stop being the unit of parallelism.
+ * Measures {@link ShareWorker}; everything else in this file is measurement.
  * <ol>
  *   <li>4 share consumers on 3 partitions, implicit acknowledgement</li>
  *   <li>explicit acknowledgement: ACCEPT / RELEASE (retry) / REJECT (dead)</li>
@@ -92,12 +95,12 @@ public final class ConsumerShareDemo implements Demo {
             // subscribed exist for it; the other two need EARLIEST to see the pre-seeded topic.
             String reset = g.endsWith("-locks") ? "latest" : "earliest";
             try {
-                topics.alterGroupConfigs(g, Map.of(
-                        "share.auto.offset.reset", reset,
-                        "share.record.lock.duration.ms", "2000",
-                        "share.delivery.count.limit", "3"));
-            } catch (IllegalStateException e) {
+                ShareWorker.configureGroup(topics.admin(), g, ShareWorker.groupSettings(reset, Duration.ofSeconds(2), 3));
+            } catch (ExecutionException e) {
                 System.out.println("could not set group configs for " + g + ": " + e.getCause());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
             }
         }
         System.out.printf("group configs set for %s*: share.auto.offset.reset=earliest (latest for the lock demo), share.record.lock.duration.ms=2000, share.delivery.count.limit=3%n", group);
@@ -167,43 +170,40 @@ public final class ConsumerShareDemo implements Demo {
                    Here: every 50th key is poison -> REJECT; every 7th key fails on its FIRST delivery -> RELEASE, then ACCEPT.
                 """);
         var props = shareProps(args, group, "explicit");
-        props.put(ConsumerConfig.SHARE_ACKNOWLEDGEMENT_MODE_CONFIG, "explicit");
-        int accepted = 0, released = 0, rejected = 0, redelivered = 0, maxDelivery = 0;
+        props.putAll(ShareWorker.explicitAcks());
+        var accepted = new AtomicInteger();
+        var released = new AtomicInteger();
+        var rejected = new AtomicInteger();
+        var redelivered = new AtomicInteger();
+        var maxDelivery = new AtomicInteger();
         try (var consumer = new KafkaShareConsumer<String, String>(props)) {
             consumer.subscribe(List.of(TOPIC));
+            // The recipe under test; the decider is the demo's scripted policy plus the counters for the table.
+            var worker = new ShareWorker<>(consumer, r -> {
+                int delivery = r.deliveryCount().map(Short::intValue).orElse(1);
+                maxDelivery.accumulateAndGet(delivery, Math::max);
+                if (delivery > 1) {
+                    redelivered.incrementAndGet();
+                }
+                long seq = Long.parseLong(r.key().substring(r.key().lastIndexOf('-') + 1));
+                if (seq % 50 == 0) {
+                    rejected.incrementAndGet();
+                    return AcknowledgeType.REJECT;
+                }
+                if (seq % 7 == 0 && delivery == 1) {
+                    released.incrementAndGet();
+                    return AcknowledgeType.RELEASE;
+                }
+                accepted.incrementAndGet();
+                return AcknowledgeType.ACCEPT;
+            }, (tp, e) -> System.out.println("  commit error on " + tp + ": " + e));
             int idle = 0;
-            long expected = records;
-            while (accepted + rejected < expected && idle < 20) {
-                ConsumerRecords<String, String> batch = consumer.poll(Duration.ofMillis(300));
-                if (batch.isEmpty()) {
-                    idle++;
-                    continue;
-                }
-                idle = 0;
-                for (ConsumerRecord<String, String> r : batch) {
-                    int delivery = r.deliveryCount().map(Short::intValue).orElse(1);
-                    maxDelivery = Math.max(maxDelivery, delivery);
-                    if (delivery > 1) {
-                        redelivered++;
-                    }
-                    long seq = Long.parseLong(r.key().substring(r.key().lastIndexOf('-') + 1));
-                    if (seq % 50 == 0) {
-                        consumer.acknowledge(r, AcknowledgeType.REJECT);
-                        rejected++;
-                    } else if (seq % 7 == 0 && delivery == 1) {
-                        consumer.acknowledge(r, AcknowledgeType.RELEASE);
-                        released++;
-                    } else {
-                        consumer.acknowledge(r, AcknowledgeType.ACCEPT);
-                        accepted++;
-                    }
-                }
-                Map<TopicIdPartition, Optional<KafkaException>> result = consumer.commitSync();
-                result.forEach((tp, err) -> err.ifPresent(e -> System.out.println("  commit error on " + tp + ": " + e)));
+            while (accepted.get() + rejected.get() < records && idle < 20) {
+                idle = worker.pollOnce(Duration.ofMillis(300)) == 0 ? idle + 1 : 0;
             }
         }
         new Table("input records", "accepted", "released (retried)", "rejected (poison)", "records seen with deliveryCount > 1", "max deliveryCount")
-                .row(records, accepted, released, rejected, redelivered, maxDelivery)
+                .row(records, accepted.get(), released.get(), rejected.get(), redelivered.get(), maxDelivery.get())
                 .print("explicit acknowledgement");
         System.out.println("  accepted + rejected = input: every record ended in exactly one final state; released ones came back and were accepted.");
     }

@@ -8,9 +8,13 @@ import io.kafkatweaks.common.Topics;
 import io.kafkatweaks.spring.ClientCapture;
 import io.kafkatweaks.spring.DemoSupport;
 import io.kafkatweaks.spring.TopicsConfig;
+import io.kafkatweaks.spring.txn.recipe.OrderTransfer;
+import io.kafkatweaks.spring.txn.recipe.TxnRecipe;
+import io.kafkatweaks.spring.txn.recipe.UppercaseProcessor;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
@@ -19,7 +23,6 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.transaction.KafkaTransactionManager;
-import org.springframework.transaction.annotation.EnableTransactionManagement;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -31,7 +34,8 @@ import java.util.TreeSet;
 import java.util.function.LongSupplier;
 
 /**
- * Chapter 19: transactions the Spring way.
+ * Chapter 19: transactions the Spring way. Measures {@link TxnRecipe}, {@link OrderTransfer} and {@link UppercaseProcessor};
+ * everything else in this file is measurement.
  * <ol>
  *   <li>{@code executeInTransaction}: atomic writes, aborted vs committed, read_uncommitted vs read_committed</li>
  *   <li>a transactional template refuses a plain send() unless {@code allowNonTransactional}</li>
@@ -47,16 +51,15 @@ import java.util.function.LongSupplier;
  */
 @Configuration(proxyBeanMethods = false)
 @Profile("spring-transactions")
-@EnableTransactionManagement   // Boot's spring-boot-tx module does this when present; spelled out here so @Transactional in OrderTransfer always works
 public class TransactionsDemo {
 
     @Bean
     ApplicationRunner springTransactions(DemoSupport support, KafkaTemplate<String, String> template, ProducerFactory<String, String> producerFactory,
-                                         OrderTransfer transfer, TxnProcessorListener processor, ClientCapture capture, KafkaTransactionManager<?, ?> transactionManager) {
+                                         OrderTransfer transfer, TxnProbe probe, ClientCapture capture, KafkaTransactionManager<?, ?> transactionManager) {
         return support.demo("spring-transactions", args -> {
             long records = args.getLong("records", 1200);
             long sample = args.getLong("sample", 200);
-            processor.crashAtRecord(args.getLong("crash", 800));
+            probe.crashAtRecord(args.getLong("crash", 800));
             System.out.printf("KafkaTransactionManager bean present: %s (auto-configured because spring.kafka.producer.transaction-id-prefix is set); template.isTransactional()=%s%n%n",
                     transactionManager.getClass().getSimpleName(), template.isTransactional());
 
@@ -75,12 +78,11 @@ public class TransactionsDemo {
             } catch (IllegalStateException expected) {
                 System.out.println("transaction 1: 10 sends, then " + expected.getMessage() + " -> rolled back (abort markers written)");
             }
-            template.executeInTransaction(ops -> {
-                for (int i = 0; i < 10; i++) {
-                    ops.send(TopicsConfig.TXN_OUT, "committed-" + i, "visible to everyone");
-                }
-                return null;
-            });
+            var committed10 = new ArrayList<ProducerRecord<String, String>>();
+            for (int i = 0; i < 10; i++) {
+                committed10.add(new ProducerRecord<>(TopicsConfig.TXN_OUT, "committed-" + i, "visible to everyone"));
+            }
+            TxnRecipe.sendAll(template, committed10);   // <- the recipe under test
             System.out.println("transaction 2: 10 sends, callback returned normally -> committed");
             var atomic = new Table("isolation.level", "records seen", "keys");
             for (String isolation : List.of("read_uncommitted", "read_committed")) {
@@ -99,8 +101,7 @@ public class TransactionsDemo {
             } catch (IllegalStateException e) {
                 plain.row("kafkaTemplate (Boot)", false, "IllegalStateException: " + e.getMessage().substring(0, Math.min(90, e.getMessage().length())) + "...");
             }
-            var lenient = new KafkaTemplate<>(producerFactory);   // same transactional factory, not a bean
-            lenient.setAllowNonTransactional(true);
+            var lenient = TxnRecipe.nonTransactionalTemplate(producerFactory);   // same transactional factory, not a bean
             lenient.send(TopicsConfig.TXN_OUT, "plain", "sent by a non-transactional producer of the same factory").get();
             plain.row("new KafkaTemplate(sameFactory) + setAllowNonTransactional(true)", true, "succeeded: the factory hands out a non-transactional producer for this call");
             plain.print("2. spring.kafka.template.allow-non-transactional (default false): a transactional template protects you from forgetting the transaction");
@@ -134,13 +135,13 @@ public class TransactionsDemo {
             Map<TopicPartition, Long> before = endOffsets(TopicsConfig.TXN_OUT);
             var sw = Stopwatch.start();
             support.start("txn-per-record");
-            await(processor::recordCalls, Math.min(sample, total), Duration.ofSeconds(90), "txn-per-record");
+            await(probe::recordCalls, Math.min(sample, total), Duration.ofSeconds(90), "txn-per-record");
             double recordMs = sw.elapsedMillis();
             support.stop("txn-per-record");
             // stop() returns when the consumer thread is done or after shutdown-timeout (10 s). With immediate-stop=true (this
             // profile) the thread quits after the current record instead of after the current poll; wait for it to close.
             await(() -> capture.consumers("txn-record").isEmpty() ? 1 : 0, 1, Duration.ofSeconds(30), "txn-per-record consumer closed");
-            row(eos, "txn-per-record (stopped after " + Math.min(sample, total) + ")", processor.recordCalls(), processor.recordCalls(), " (one per record)", recordMs, before);
+            row(eos, "txn-per-record (stopped after " + Math.min(sample, total) + ")", probe.recordCalls(), probe.recordCalls(), " (one per record)", recordMs, before);
 
             // 4b. one transaction per poll, one crash in the middle of a batch: the whole topic
             before = endOffsets(TopicsConfig.TXN_OUT);
@@ -151,7 +152,7 @@ public class TransactionsDemo {
                 while (System.nanoTime() < deadline) {
                     // done = every input partition has a committed offset (sent inside a transaction) and no lag is left
                     Map<TopicPartition, Long> lag = topics.lag("spring-txn-batch");
-                    if (processor.batchRecords() >= total && lag.size() >= 3 && lag.values().stream().mapToLong(Long::longValue).sum() == 0) {
+                    if (probe.batchRecords() >= total && lag.size() >= 3 && lag.values().stream().mapToLong(Long::longValue).sum() == 0) {
                         break;
                     }
                     DemoSupport.sleep(200);
@@ -159,9 +160,9 @@ public class TransactionsDemo {
             }
             double batchMs = sw.elapsedMillis();
             support.stop("txn-per-batch");
-            row(eos, "txn-per-batch (batch=\"true\", all " + total + ")", processor.batchRecords(), processor.batchCalls(), " (one per poll, incl. the rolled-back one)", batchMs, before);
+            row(eos, "txn-per-batch (batch=\"true\", all " + total + ")", probe.batchRecords(), probe.batchCalls(), " (one per poll, incl. the rolled-back one)", batchMs, before);
 
-            processor.events().forEach(e -> System.out.println("   " + e));
+            probe.events().forEach(e -> System.out.println("   " + e));
             eos.print("4. @KafkaListener + KafkaTemplate inside the container's transaction (max.poll.records=500); the batch listener crashes once at record %d".formatted(args.getLong("crash", 800)));
             // NOT "the transactional producers": part 2's setAllowNonTransactional(true) send made this same factory
             // create and cache a producer with transactional.id=null, and it registers with ProducerFactory.Listener

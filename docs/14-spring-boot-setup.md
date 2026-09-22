@@ -1,6 +1,6 @@
 # 14 · Spring Boot wiring and the `spring.kafka.*` mapping
 
-**Demo:** `spring-setup` · [SetupDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/setup/SetupDemo.java) · [application-spring-setup.yml](../spring-boot-kafka/src/main/resources/application-spring-setup.yml)
+**Demo:** `spring-setup` · [SetupDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/setup/SetupDemo.java) · **Recipe:** [application-spring-setup.yml](../spring-boot-kafka/src/main/resources/application-spring-setup.yml), [TopicsConfig.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/TopicsConfig.java)
 
 ## The problem
 
@@ -91,6 +91,56 @@ deprecation warning for the `classic` group protocol). `tweaks-common`'s own kaf
 to 4.2.1 inside this module by the imported BOM (managed versions apply to transitive dependencies), and the
 same happens to its Jackson 2 (2.22.2 → Boot's 2.21.5). To run the brokers' line instead, declare
 `org.apache.kafka:kafka-clients:${kafka.version}` in the module's `dependencyManagement` above the BOM import.
+
+## The code that matters
+
+In Spring the tweak is configuration, not code. The chapter-01–08 knobs, written the Boot way, from
+[application-spring-setup.yml](../spring-boot-kafka/src/main/resources/application-spring-setup.yml):
+
+<!-- recipe: spring-boot-kafka/src/main/resources/application-spring-setup.yml -->
+```yaml
+spring:
+  kafka:
+    properties:
+      "[metadata.max.age.ms]": 30000          # common: producer, consumer AND admin get it
+    producer:
+      acks: all
+      batch-size: 64KB                        # DataSize -> batch.size=65536
+      compression-type: zstd
+      properties:
+        "[linger.ms]": 20                     # no typed key for linger.ms
+        "[enable.idempotence]": true
+    consumer:
+      group-id: spring-setup
+      max-poll-records: 250
+      fetch-max-wait: 250ms                   # Duration -> fetch.max.wait.ms=250
+      isolation-level: read_committed         # enum, relaxed binding
+      properties:
+        "[group.protocol]": consumer          # KIP-848 protocol; Boot 4.1 has no typed key for it
+```
+
+and the topics the application owns, from [TopicsConfig.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/TopicsConfig.java):
+
+<!-- recipe: spring-boot-kafka/src/main/java/io/kafkatweaks/spring/TopicsConfig.java -->
+```java
+@Bean
+KafkaAdmin.NewTopics springTopics() {
+    return new KafkaAdmin.NewTopics(
+            topic(TEMPLATE, 3), topic(LISTENER, 3), topic(PARALLEL, 6),
+            // ...
+            topic(SERDES, 3), topic(AVRO, 3));
+}
+
+private static NewTopic topic(String name, int partitions) {
+    return TopicBuilder.name(name).partitions(partitions).replicas(REPLICAS).build();
+}
+```
+
+- **A typed key where Boot has one** (`batch-size: 64KB`, `fetch-max-wait: 250ms`), **`properties["[...]"]` for
+  everything else** (`linger.ms`, `group.protocol`). The demo prints what each one became in the real client config.
+- **`spring.kafka.properties`** reaches producer, consumer and admin at once; `spring.kafka.producer.properties`
+  only the producer.
+- **`KafkaAdmin.NewTopics`**: `KafkaAdmin` creates missing topics at startup and never lowers a partition count.
 
 ## Run it
 

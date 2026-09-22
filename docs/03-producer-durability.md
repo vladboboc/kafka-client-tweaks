@@ -1,6 +1,6 @@
 # 03 · Durability, ordering and retries
 
-**Demo:** `producer-durability` · [ProducerDurabilityDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerDurabilityDemo.java)
+**Demo:** `producer-durability` · [ProducerDurabilityDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerDurabilityDemo.java) · **Recipe:** [DurableProducer.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/DurableProducer.java)
 
 ## The problem
 
@@ -20,6 +20,46 @@ about what the producer does between a failed request and the callback.
 | `request.timeout.ms` | 30000 | one request's budget |
 | `delivery.timeout.ms` | 120000 | total budget from `send()` to callback, retries included. Must be ≥ `linger.ms + request.timeout.ms` |
 | `max.block.ms` | 60000 | how long `send()` itself may block (metadata, buffer) |
+
+## The code that matters
+
+From [DurableProducer.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/DurableProducer.java):
+a producer setting, a topic setting, and the budget that decides how long a refused write takes to fail.
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/producer/recipe/DurableProducer.java -->
+```java
+public static Map<String, Object> durable() {
+    return Map.of(
+            // The leader answers once every in-sync replica has the batch (at least min.insync.replicas of them).
+            ProducerConfig.ACKS_CONFIG, "all",
+            // Producer id + a sequence number per partition: a retried batch is stored once, and up to 5 requests
+            // in flight stay in order. Costs nothing measurable; it is what makes the infinite retries safe.
+            ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
+}
+// ...
+public static Map<String, Object> failFast(Duration requestTimeout, Duration deliveryTimeout, Duration maxBlock) {
+    return Map.of(
+            ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, (int) requestTimeout.toMillis(),     // one produce request, default 30 s
+            ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, (int) deliveryTimeout.toMillis(),   // send() to callback, all retries, default 120 s
+            ProducerConfig.MAX_BLOCK_MS_CONFIG, maxBlock.toMillis());                      // send() blocking on metadata or buffer, default 60 s
+}
+// ...
+public static Map<String, String> minInSyncReplicas(int replicas) {
+    return Map.of(TopicConfig.MIN_IN_SYNC_REPLICAS_CONFIG, String.valueOf(replicas));
+}
+```
+
+- **`durable()` is the 4.x default, written out.** It only protects anything together with the topic's
+  `minInSyncReplicas(2)`: with one of two replicas gone, `acks=all` was refused and failed after 8.1 s, while
+  `leaderOnly()` (acks=1) "succeeded" in 138 ms onto a single disk.
+- **`failFast(3 s, 8 s, 10 s)`** is why that failure took seconds, not two minutes. Keep the 120 s default to ride
+  through a broker restart without the application noticing; the client refuses a `deliveryTimeout` shorter than
+  `linger.ms + requestTimeout` (the demo's part 2).
+- `leaderOnly()` and `fireAndForget()` turn idempotence off, because the client refuses `acks=0/1` with it on.
+
+The demo builds its acks rows, the ISR test producers and both topics from the recipe; everything else in
+[ProducerDurabilityDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerDurabilityDemo.java)
+is measurement (and the deliberately invalid timeout chain).
 
 ## Run it
 

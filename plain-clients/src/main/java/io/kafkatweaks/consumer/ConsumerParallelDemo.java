@@ -7,6 +7,7 @@ import io.kafkatweaks.common.Stopwatch;
 import io.kafkatweaks.common.Table;
 import io.kafkatweaks.common.Topics;
 import io.kafkatweaks.common.Seed;
+import io.kafkatweaks.consumer.recipe.PartitionedWorkerConsumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -16,18 +17,16 @@ import org.apache.kafka.common.TopicPartition;
 
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Properties;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Chapter 10: getting more processing out of a topic when the handler, not Kafka, is the bottleneck.
+ * Chapter 10: getting more processing out of a topic when the handler, not Kafka, is the bottleneck. Mode 5 measures
+ * {@link PartitionedWorkerConsumer}; everything else in this file is measurement.
  * Every record "costs" {@code work-ms} of processing. Same topic, same records, five ways of consuming:
  * <ol>
  *   <li>one consumer, sequential</li>
@@ -186,63 +185,25 @@ public final class ConsumerParallelDemo implements Demo {
     // ------------------------------------------------------------------ 5
 
     /**
-     * The production-grade shape: the poll thread never does work and never blocks on it. Each partition
-     * has one sequential worker (ordering kept), records flow through a bounded amount of in-flight work
-     * (pause when too much, resume when drained), and offsets are committed from a per-partition
+     * The production-grade shape, {@link PartitionedWorkerConsumer}: the poll thread never does work and never blocks
+     * on it. Each partition has one sequential worker (ordering kept), records flow through a bounded amount of
+     * in-flight work (pause when too much, resume when drained), and offsets are committed from a per-partition
      * "everything below this is done" watermark.
      */
     private static Object[] asyncPipeline(Args args, int records, int workMs) throws Exception {
-        // Enough buffered work that every partition worker stays busy between polls; pause well before memory matters.
-        final int highWatermark = 3000, lowWatermark = 1500;
         var watch = Stopwatch.start();
-        var inFlight = new AtomicInteger();
-        var completed = new ConcurrentHashMap<TopicPartition, AtomicLong>();   // next offset to commit, per partition
-        var workers = new HashMap<TopicPartition, ExecutorService>();
         int pauses = 0;
         long processed = 0;
-        boolean paused = false;
         try (var consumer = interleavingConsumer(args, "parallel-5-" + System.nanoTime(), "mode5")) {
-            consumer.subscribe(List.of(TOPIC));
-            while (processed < records) {
-                ConsumerRecords<String, String> batch = consumer.poll(Duration.ofMillis(100));
-                for (var r : batch) {
-                    TopicPartition tp = new TopicPartition(r.topic(), r.partition());
-                    // one single-threaded (virtual) executor per partition = FIFO per partition
-                    ExecutorService worker = workers.computeIfAbsent(tp, k -> Executors.newSingleThreadExecutor(Thread.ofVirtual().factory()));
-                    inFlight.incrementAndGet();
-                    worker.submit(() -> {
-                        work(r, workMs);
-                        completed.computeIfAbsent(tp, k -> new AtomicLong()).set(r.offset() + 1);   // sequential per partition, so this is monotonic
-                        inFlight.decrementAndGet();
-                    });
+            // Enough buffered work that every partition worker stays busy between polls; pause well before memory matters.
+            try (var pipeline = new PartitionedWorkerConsumer<>(consumer, r -> work(r, workMs), 3000, 1500)) {   // <- the recipe under test
+                pipeline.subscribe(List.of(TOPIC));
+                while (processed < records) {
+                    pipeline.pollOnce(Duration.ofMillis(100));
+                    processed = pipeline.watermarks().values().stream().mapToLong(OffsetAndMetadata::offset).sum();
                 }
-                processed = completed.values().stream().mapToLong(AtomicLong::get).sum();
-                // back-pressure: stop fetching (but keep polling, so the group still sees us alive) while workers are behind
-                if (!paused && inFlight.get() > highWatermark) {
-                    consumer.pause(consumer.assignment());
-                    paused = true;
-                    pauses++;
-                } else if (paused && inFlight.get() < lowWatermark) {
-                    consumer.resume(consumer.assignment());
-                    paused = false;
-                }
-                // commit the watermarks: only offsets whose records are done
-                var offsets = new HashMap<TopicPartition, OffsetAndMetadata>();
-                completed.forEach((tp, next) -> offsets.put(tp, new OffsetAndMetadata(next.get())));
-                if (!offsets.isEmpty()) {
-                    consumer.commitAsync(offsets, null);
-                }
-            }
-            // The final commit is the watermark map too, never the no-arg commitSync(): that one commits the
-            // consumer's POSITION, i.e. everything fetched, which would mark any record still in a worker's
-            // queue as processed and break the rule this mode exists to demonstrate.
-            var finalOffsets = new HashMap<TopicPartition, OffsetAndMetadata>();
-            completed.forEach((tp, next) -> finalOffsets.put(tp, new OffsetAndMetadata(next.get())));
-            if (!finalOffsets.isEmpty()) {
-                consumer.commitSync(finalOffsets);
-            }
-        } finally {
-            workers.values().forEach(ExecutorService::close);
+                pauses = pipeline.pauses();
+            }   // closing the pipeline finishes the workers' queues, then commits the watermarks (never the position)
         }
         return new Object[] {"5 async pipeline (paused %dx)".formatted(pauses), 1, PARTITIONS, watch.elapsedSeconds(), watch.rate(records), "per partition",
                 "watermark commits: at-least-once, poll never blocks"};
@@ -274,9 +235,8 @@ public final class ConsumerParallelDemo implements Demo {
      */
     private static KafkaConsumer<String, String> interleavingConsumer(Args args, String group, String clientId) {
         Properties props = Env.consumer(group, "parallel-" + clientId);
-        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+        props.putAll(PartitionedWorkerConsumer.config());   // auto-commit off, 16 KB per partition per fetch
         props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "500");
-        props.put(ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG, String.valueOf(16 * 1024));
         args.applyOverrides(props);
         return new KafkaConsumer<>(props);
     }

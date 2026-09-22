@@ -13,6 +13,22 @@ JSON and Avro serializers, and testing on an embedded KRaft broker.
 
 Stack: **Java 25 · Maven Wrapper · Docker Compose · Confluent Platform 8.3.2 (Apache Kafka 4.3, KRaft) · kafka-clients 4.3.1 · Spring Boot 4.1.1 / spring-kafka 4.1.1 · Schema Registry · Kafbat UI**.
 
+## Where the code that matters is
+
+**Code in a `recipe` package is the tweak. Everything else measures it.** A demo is mostly measurement (seeding,
+timing, metrics, tables); the few lines that did the magic live in small, commented recipe classes next to it, and
+the demo calls them, so the chapter's numbers are the recipe's numbers:
+
+```
+plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ThroughputProducer.java   <- the tweak (copy this)
+plain-clients/src/main/java/io/kafkatweaks/producer/ProducerBatchingDemo.java        <- measures it
+```
+
+Every chapter has a **"The code that matters"** section with the recipe's key lines and what each one bought in the
+run. [docs/recipes.md](docs/recipes.md) lists all of them on one page. Plain recipes import nothing but the JDK,
+`kafka-clients` and the Confluent serializers; in the Spring recipes, `probe.*`/`script.*` calls inside a listener
+are the demo's instrumentation, and your processing goes there.
+
 ---
 
 ## Quick start
@@ -58,36 +74,36 @@ Spring demos: `./mvnw -q -pl spring-boot-kafka -am compile spring-boot:run -Dspr
 No arguments lists them. In part 1 keys containing a dot (`linger.ms=20`) are passed to the Kafka client as-is; in
 part 2 the same override is a Spring property (`--spring.kafka.producer.properties.linger.ms=20`).
 
-| # | Chapter | Demo | What you tune |
-|---|---|---|---|
-| 00 | [Setup and how to run](docs/00-setup.md) | – | the stack, the command shape, the shared helpers |
-| **Producer** | | | |
-| 01 | [Anatomy, defaults, metrics](docs/01-producer-baseline.md) | `producer-baseline` | the send path, sync vs async, 4.x defaults, reading `metrics()` |
-| 02 | [Throughput: batching and compression](docs/02-producer-batching-compression.md) | `producer-batching` | `batch.size`, `linger.ms`, `compression.type` + levels, `buffer.memory`, `max.block.ms` |
-| 03 | [Durability, ordering, retries](docs/03-producer-durability.md) | `producer-durability` | `acks`, `min.insync.replicas`, idempotence, the timeout chain, a broker stopped mid-demo |
-| 04 | [Partitioning and keys](docs/04-producer-partitioning.md) | `producer-partitioning` | sticky vs round-robin, key hashing, hot keys, `partitioner.ignore.keys`, custom `Partitioner` |
-| 05 | [Latency first](docs/05-producer-low-latency.md) | `producer-low-latency` | `linger.ms=0`, `acks`, no compression; sequential and paced workloads |
-| 06 | [Transactions and exactly-once](docs/06-producer-transactions.md) | `producer-transactions` | `transactional.id`, `read_committed`, commit cost, consume-transform-produce, zombie fencing |
-| **Consumer** | | | |
-| 07 | [The poll loop and fetch tuning](docs/07-consumer-fetch.md) | `consumer-fetch` | `max.poll.records`, `fetch.min.bytes`, `fetch.max.wait.ms`, `max.partition.fetch.bytes`, `max.poll.interval.ms` |
-| 08 | [Offsets and delivery guarantees](docs/08-consumer-offsets.md) | `consumer-offsets` | commit before/after, idempotent handlers, auto-commit timing, `auto.offset.reset`, seeking |
-| 09 | [Group protocol and rebalancing](docs/09-consumer-rebalance.md) | `consumer-rebalance` | `group.protocol=consumer` (KIP-848) vs `classic`, assignors, static membership; a live timeline |
-| 10 | [Scaling and parallelism](docs/10-consumer-parallel.md) | `consumer-parallel` | partitions vs consumers, per-partition workers on virtual threads, pause/resume, watermark commits |
-| 11 | [Queues for Kafka: share groups](docs/11-consumer-share-groups.md) | `consumer-share` | `KafkaShareConsumer`, explicit acks (ACCEPT/RELEASE/REJECT), acquisition locks, delivery limits |
-| 12 | [Client resilience and operations](docs/12-client-resilience.md) | `client-resilience` | `client.rack`, a broker dying mid-stream, interceptors, KIP-714 telemetry, rebootstrap |
-| **Serialization** | | | |
-| 13 | [Schema Registry and Avro](docs/13-avro-schema-registry.md) | `avro-roundtrip` | generated records, wire size vs JSON, `auto.register.schemas`, subject strategies, evolution |
-| **Spring Boot** | | | |
-| 14 | [Spring Boot wiring and the `spring.kafka.*` mapping](docs/14-spring-boot-setup.md) | `spring-setup` | what Boot auto-configures, typed keys vs `properties[...]`, `KafkaAdmin` topics, a 4.2 client on 4.3 brokers |
-| 15 | [KafkaTemplate](docs/15-spring-kafkatemplate.md) | `spring-template` | sync vs async `send()`, `ProducerListener`, several templates from one factory, the chapter-02 matrix, Micrometer |
-| 16 | [`@KafkaListener` and acknowledgment modes](docs/16-spring-listeners-acks.md) | `spring-listener-acks` | `AckMode` per listener (`ackMode` attribute), commits per mode, `nack()`, `ConsumerSeekAware`, filter and interceptor |
-| 17 | [Concurrency, batch listeners and back-pressure](docs/17-spring-concurrency-batch.md) | `spring-concurrency` | concurrency vs partitions, batch listeners, containers on virtual threads, `asyncAcks`, pause/resume |
-| 18 | [Error handling, retries, dead letters and `@RetryableTopic`](docs/18-spring-error-handling-retry.md) | `spring-error-handling` | `DefaultErrorHandler` back-off, `DeadLetterPublishingRecoverer`, poison pills, non-blocking retry topics |
-| 19 | [Transactions in Spring](docs/19-spring-transactions.md) | `spring-transactions` | `transaction-id-prefix`, `executeInTransaction`, `@Transactional`, container-managed exactly-once |
-| 20 | [Share consumers (queues) in Spring](docs/20-spring-share-consumers.md) | `spring-share` | `ShareAckMode` EXPLICIT/MANUAL, `release()`/`reject()`/`renew()`, recoverer, acquisition locks |
-| 21 | [Serialization in Spring: JSON and Avro](docs/21-spring-serialization.md) | `spring-serdes` | Jackson 3 `__TypeId__` tokens, per-listener deserializer properties, message converter, Avro via a second factory |
-| 22 | [Testing Spring Kafka applications](docs/22-spring-testing.md) | (test suite) | `Binder`-checked property mapping, `MockProducerFactory`, embedded KRaft broker, dead letters and share listeners in tests |
-| | [Cheat sheet](docs/cheatsheet.md) | | goal → knob → metric → cost, on one page; plain config → `spring.kafka.*` |
+| # | Chapter | Demo | What you tune | Recipe (the code to copy) |
+|---|---|---|---|---|
+| 00 | [Setup and how to run](docs/00-setup.md) | – | the stack, the command shape, the shared helpers | – |
+| **Producer** | | | | |
+| 01 | [Anatomy, defaults, metrics](docs/01-producer-baseline.md) | `producer-baseline` | the send path, sync vs async, 4.x defaults, reading `metrics()` | [ProducerBasics](plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ProducerBasics.java) |
+| 02 | [Throughput: batching and compression](docs/02-producer-batching-compression.md) | `producer-batching` | `batch.size`, `linger.ms`, `compression.type` + levels, `buffer.memory`, `max.block.ms` | [ThroughputProducer](plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ThroughputProducer.java) |
+| 03 | [Durability, ordering, retries](docs/03-producer-durability.md) | `producer-durability` | `acks`, `min.insync.replicas`, idempotence, the timeout chain, a broker stopped mid-demo | [DurableProducer](plain-clients/src/main/java/io/kafkatweaks/producer/recipe/DurableProducer.java) |
+| 04 | [Partitioning and keys](docs/04-producer-partitioning.md) | `producer-partitioning` | sticky vs round-robin, key hashing, hot keys, `partitioner.ignore.keys`, custom `Partitioner` | [KeyPartitioning](plain-clients/src/main/java/io/kafkatweaks/producer/recipe/KeyPartitioning.java), [TenantPartitioner](plain-clients/src/main/java/io/kafkatweaks/producer/recipe/TenantPartitioner.java) |
+| 05 | [Latency first](docs/05-producer-low-latency.md) | `producer-low-latency` | `linger.ms=0`, `acks`, no compression; sequential and paced workloads | [LowLatencyProducer](plain-clients/src/main/java/io/kafkatweaks/producer/recipe/LowLatencyProducer.java) |
+| 06 | [Transactions and exactly-once](docs/06-producer-transactions.md) | `producer-transactions` | `transactional.id`, `read_committed`, commit cost, consume-transform-produce, zombie fencing | [ExactlyOnceProcessor](plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ExactlyOnceProcessor.java) |
+| **Consumer** | | | | |
+| 07 | [The poll loop and fetch tuning](docs/07-consumer-fetch.md) | `consumer-fetch` | `max.poll.records`, `fetch.min.bytes`, `fetch.max.wait.ms`, `max.partition.fetch.bytes`, `max.poll.interval.ms` | [FetchTuning](plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/FetchTuning.java) |
+| 08 | [Offsets and delivery guarantees](docs/08-consumer-offsets.md) | `consumer-offsets` | commit before/after, idempotent handlers, auto-commit timing, `auto.offset.reset`, seeking | [AtLeastOnceConsumer](plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/AtLeastOnceConsumer.java), [Replay](plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/Replay.java) |
+| 09 | [Group protocol and rebalancing](docs/09-consumer-rebalance.md) | `consumer-rebalance` | `group.protocol=consumer` (KIP-848) vs `classic`, assignors, static membership; a live timeline | [GroupProtocols](plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/GroupProtocols.java), [CommitOnRevoke](plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/CommitOnRevoke.java) |
+| 10 | [Scaling and parallelism](docs/10-consumer-parallel.md) | `consumer-parallel` | partitions vs consumers, per-partition workers on virtual threads, pause/resume, watermark commits | [PartitionedWorkerConsumer](plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/PartitionedWorkerConsumer.java) |
+| 11 | [Queues for Kafka: share groups](docs/11-consumer-share-groups.md) | `consumer-share` | `KafkaShareConsumer`, explicit acks (ACCEPT/RELEASE/REJECT), acquisition locks, delivery limits | [ShareWorker](plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/ShareWorker.java) |
+| 12 | [Client resilience and operations](docs/12-client-resilience.md) | `client-resilience` | `client.rack`, a broker dying mid-stream, interceptors, KIP-714 telemetry, rebootstrap | [ResilientClients](plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/ResilientClients.java) + two interceptors |
+| **Serialization** | | | | |
+| 13 | [Schema Registry and Avro](docs/13-avro-schema-registry.md) | `avro-roundtrip` | generated records, wire size vs JSON, `auto.register.schemas`, subject strategies, evolution | [AvroClients](plain-clients/src/main/java/io/kafkatweaks/avro/recipe/AvroClients.java), [AvroTrust](tweaks-common/src/main/java/io/kafkatweaks/avro/AvroTrust.java) |
+| **Spring Boot** | | | | |
+| 14 | [Spring Boot wiring and the `spring.kafka.*` mapping](docs/14-spring-boot-setup.md) | `spring-setup` | what Boot auto-configures, typed keys vs `properties[...]`, `KafkaAdmin` topics, a 4.2 client on 4.3 brokers | [application-spring-setup.yml](spring-boot-kafka/src/main/resources/application-spring-setup.yml), [TopicsConfig](spring-boot-kafka/src/main/java/io/kafkatweaks/spring/TopicsConfig.java) |
+| 15 | [KafkaTemplate](docs/15-spring-kafkatemplate.md) | `spring-template` | sync vs async `send()`, `ProducerListener`, several templates from one factory, the chapter-02 matrix, Micrometer | [TemplateRecipe](spring-boot-kafka/src/main/java/io/kafkatweaks/spring/template/recipe/TemplateRecipe.java), [SendPatterns](spring-boot-kafka/src/main/java/io/kafkatweaks/spring/template/recipe/SendPatterns.java) |
+| 16 | [`@KafkaListener` and acknowledgment modes](docs/16-spring-listeners-acks.md) | `spring-listener-acks` | `AckMode` per listener (`ackMode` attribute), commits per mode, `nack()`, `ConsumerSeekAware`, filter and interceptor | [AckModeListeners](spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/recipe/AckModeListeners.java), [ReplayListener](spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/recipe/ReplayListener.java) |
+| 17 | [Concurrency, batch listeners and back-pressure](docs/17-spring-concurrency-batch.md) | `spring-concurrency` | concurrency vs partitions, batch listeners, containers on virtual threads, `asyncAcks`, pause/resume | [ParallelListeners](spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/recipe/ParallelListeners.java), [ConcurrencyRecipe](spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/recipe/ConcurrencyRecipe.java) |
+| 18 | [Error handling, retries, dead letters and `@RetryableTopic`](docs/18-spring-error-handling-retry.md) | `spring-error-handling` | `DefaultErrorHandler` back-off, `DeadLetterPublishingRecoverer`, poison pills, non-blocking retry topics | [ErrorHandlingRecipe](spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/recipe/ErrorHandlingRecipe.java), [OrderListeners](spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/recipe/OrderListeners.java) |
+| 19 | [Transactions in Spring](docs/19-spring-transactions.md) | `spring-transactions` | `transaction-id-prefix`, `executeInTransaction`, `@Transactional`, container-managed exactly-once | [TxnRecipe](spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/recipe/TxnRecipe.java), [UppercaseProcessor](spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/recipe/UppercaseProcessor.java) |
+| 20 | [Share consumers (queues) in Spring](docs/20-spring-share-consumers.md) | `spring-share` | `ShareAckMode` EXPLICIT/MANUAL, `release()`/`reject()`/`renew()`, recoverer, acquisition locks | [ShareConfig](spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/ShareConfig.java), [ShareListeners](spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/ShareListeners.java) |
+| 21 | [Serialization in Spring: JSON and Avro](docs/21-spring-serialization.md) | `spring-serdes` | Jackson 3 `__TypeId__` tokens, per-listener deserializer properties, message converter, Avro via a second factory | [SerdesConfig](spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/recipe/SerdesConfig.java), [SerdesListeners](spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/recipe/SerdesListeners.java) |
+| 22 | [Testing Spring Kafka applications](docs/22-spring-testing.md) | (test suite) | `Binder`-checked property mapping, `MockProducerFactory`, embedded KRaft broker, dead letters and share listeners in tests | [DemoProfilesTest](spring-boot-kafka/src/test/java/io/kafkatweaks/spring/DemoProfilesTest.java) and the rest of the suite |
+| | [Cheat sheet](docs/cheatsheet.md) | | goal → knob → metric → cost, on one page; plain config → `spring.kafka.*` | [recipes.md](docs/recipes.md): all of them on one page |
 
 ---
 
@@ -118,7 +134,7 @@ runs the 4.2.1 client Boot ships, see the notes below.
 ```
 ├── docker-compose.yml        3 KRaft brokers (racks a/b/c) + Schema Registry + Kafbat UI + topic-init
 ├── docker/kafka/             create-topics.sh: the tweaks.* topics, share.version check
-├── docs/                     one markdown file per chapter + cheatsheet
+├── docs/                     one markdown file per chapter + cheatsheet + recipes.md (the code to copy, per chapter)
 ├── tweaks-common/            Maven module with the helpers both demo modules share
 │   ├── src/main/avro/        Order.avsc, compiled by avro-maven-plugin
 │   └── src/main/java/io/kafkatweaks/
@@ -127,13 +143,14 @@ runs the 4.2.1 client Boot ships, see the notes below.
 ├── plain-clients/            Maven module with the plain-client demos (part 1)
 │   └── src/main/java/io/kafkatweaks/
 │       ├── Run.java          the dispatcher: one demo name per chapter
-│       ├── producer/         chapters 01–06
-│       ├── consumer/         chapters 07–12
-│       └── avro/             chapter 13
+│       ├── producer/         chapters 01–06: the demos; producer/recipe/ the code to copy
+│       ├── consumer/         chapters 07–12: the demos; consumer/recipe/ the code to copy
+│       └── avro/             chapter 13: the demo; avro/recipe/ the code to copy
 └── spring-boot-kafka/        Spring Boot module (part 2); the demo name is the Spring profile
     ├── src/main/java/io/kafkatweaks/spring/
     │   ├── SpringTweaksApplication, Catalogue, DemoSupport, ClientCapture, TopicsConfig
     │   ├── setup/ template/ listener/ parallel/ errors/ txn/ share/ serdes/     chapters 14–21
+    │   │   └── <chapter>/recipe/   the configuration classes and listeners to copy
     ├── src/main/resources/   application.yml + application-<demo>.yml: that chapter's spring.kafka.* knobs
     └── src/test/java/        chapter 22: property mapping, mock producer, embedded KRaft broker tests
 ```

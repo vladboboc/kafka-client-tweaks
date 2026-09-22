@@ -1,6 +1,6 @@
 # 22 · Testing Spring Kafka applications
 
-**Tests (the module's test suite):** [KafkaPropertiesMappingTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/KafkaPropertiesMappingTest.java) · [MockProducerFactoryTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/txn/MockProducerFactoryTest.java) · [ContextLoadsTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/ContextLoadsTest.java) · [TemplateListenerRoundTripTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/TemplateListenerRoundTripTest.java) · [DeadLetterTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/errors/DeadLetterTest.java) · [ShareListenerTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/share/ShareListenerTest.java) · [TweaksSpringTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/TweaksSpringTest.java) · [application-test.yml](../spring-boot-kafka/src/test/resources/application-test.yml)
+**Tests (the module's test suite):** [KafkaPropertiesMappingTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/KafkaPropertiesMappingTest.java) · [MockProducerFactoryTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/txn/MockProducerFactoryTest.java) · [ContextLoadsTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/ContextLoadsTest.java) · [TemplateListenerRoundTripTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/TemplateListenerRoundTripTest.java) · [DeadLetterTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/errors/DeadLetterTest.java) · [ShareListenerTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/share/ShareListenerTest.java) · [TweaksSpringTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/TweaksSpringTest.java) · [DemoProfilesTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/DemoProfilesTest.java) · [application-test.yml](../spring-boot-kafka/src/test/resources/application-test.yml) · **Recipe:** the tests themselves
 
 ## The problem
 
@@ -32,6 +32,49 @@ flowchart LR
 | `brokerProperties = {...}` on `@EmbeddedKafka` | | broker settings the one-node cluster needs (the share coordinator's topic below) |
 | Testcontainers (`org.testcontainers:kafka`) | Docker | the alternative when the test must run the real image; not used here by decision: the Docker stack already exists for that |
 
+## The code that matters
+
+Here the tests are the recipes. A listener, an error handler and a dead-letter topic on a broker inside the JVM, from
+[DeadLetterTest.java](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/errors/DeadLetterTest.java):
+
+<!-- recipe: spring-boot-kafka/src/test/java/io/kafkatweaks/spring/errors/DeadLetterTest.java -->
+```java
+@TweaksSpringTest
+@EmbeddedKafka(partitions = 1, topics = {DeadLetterTest.TOPIC, DeadLetterTest.TOPIC + "-dlt"}, bootstrapServersProperty = "spring.kafka.bootstrap-servers")
+@DirtiesContext
+class DeadLetterTest {
+    // ...
+    @Bean
+    DefaultErrorHandler errorHandler(KafkaTemplate<?, ?> template) {
+        // 1 attempt + 2 retries without a pause, then recover: publish to test.errors-dlt (same partition).
+        return new DefaultErrorHandler(new DeadLetterPublishingRecoverer(template), new FixedBackOff(0, 2));
+    }
+    // ...
+    MessageListenerContainer container = registry.getListenerContainer("test-failing");
+    container.start();
+    ContainerTestUtils.waitForAssignment(container, 1);
+```
+
+and every demo profile wired without a broker, from
+[DemoProfilesTest.java](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/DemoProfilesTest.java):
+
+<!-- recipe: spring-boot-kafka/src/test/java/io/kafkatweaks/spring/DemoProfilesTest.java -->
+```java
+try (ConfigurableApplicationContext context = new SpringApplicationBuilder(SpringTweaksApplication.class)
+        .profiles(profile, "test")
+        .properties("tweaks.demo.run=false")
+        .run()) {
+    assertThat(context.getBean(KafkaListenerEndpointRegistry.class).getListenerContainerIds())
+            .containsExactlyInAnyOrderElementsOf(listenerIds);
+```
+
+- **`@EmbeddedKafka(bootstrapServersProperty = "spring.kafka.bootstrap-servers")`** points Boot's whole auto-configuration
+  at the in-JVM broker; the `DefaultErrorHandler` **bean** is enough for Boot to wire it into its container factory.
+- **Start containers yourself and wait for the assignment** (`ContainerTestUtils.waitForAssignment`): auto-startup is
+  off in this module, and a record sent before the consumer owns its partition makes the test pass by luck.
+- **A context per profile, no broker**: the `test` profile keeps `KafkaAdmin` from creating topics, containers do not
+  start, and every `containerFactory = "..."` name, `@Profile` string and listener id is checked in 3 s.
+
 ## Run it
 
 ```bash
@@ -43,20 +86,21 @@ No Docker needed. `./mvnw -q verify` at the root runs all three modules (plain u
 ## What you should see
 
 ```
-Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.030 s -- in io.kafkatweaks.spring.KafkaPropertiesMappingTest
-Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.012 s -- in io.kafkatweaks.spring.txn.MockProducerFactoryTest
-Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.011 s -- in io.kafkatweaks.spring.errors.FailureScriptTest
-Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 4.893 s -- in io.kafkatweaks.spring.ContextLoadsTest
-Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 3.181 s -- in io.kafkatweaks.spring.TemplateListenerRoundTripTest
-Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 6.246 s -- in io.kafkatweaks.spring.errors.DeadLetterTest
-Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 7.112 s -- in io.kafkatweaks.spring.share.ShareListenerTest
-Tests run: 14, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 3.183 s -- in io.kafkatweaks.spring.ContextLoadsTest
+Tests run: 9, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.366 s -- in io.kafkatweaks.spring.DemoProfilesTest
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 7.298 s -- in io.kafkatweaks.spring.errors.DeadLetterTest
+Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.010 s -- in io.kafkatweaks.spring.errors.FailureScriptTest
+Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.013 s -- in io.kafkatweaks.spring.KafkaPropertiesMappingTest
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 7.087 s -- in io.kafkatweaks.spring.share.ShareListenerTest
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 3.595 s -- in io.kafkatweaks.spring.TemplateListenerRoundTripTest
+Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.013 s -- in io.kafkatweaks.spring.txn.MockProducerFactoryTest
+Tests run: 23, Failures: 0, Errors: 0, Skipped: 0
 
-spring-boot-kafka .................................. SUCCESS [ 24.628 s]
+spring-boot-kafka .................................. SUCCESS [ 28.099 s]
 ```
 
-(`./mvnw verify` without `-q` prints the lines; the whole module, embedded brokers included, takes about 25 s on a
-laptop, 11 of them JVM and context start-up.)
+(`./mvnw verify` without `-q` prints the lines; the whole module, embedded brokers included, takes about 28 s on a
+laptop, most of it JVM, context and broker start-up. `DemoProfilesTest`'s eight contexts take 2.4 s together.)
 
 ## Reading the numbers
 
@@ -75,12 +119,16 @@ laptop, 11 of them JVM and context start-up.)
   `TopicsConfig`, `DemoSupport`, `ClientCapture`, and the fact that Boot's `KafkaTemplate`/`ProducerFactory`/
   `KafkaAdmin` are still the single beans the demos expect. It works without a broker because Boot's template
   connects lazily and `application-test.yml` turns `KafkaAdmin`'s topic creation off (the `TopicsConfig` topics are
-  RF 3, a one-node broker would refuse them anyway) and `fail-fast` too. Know its limit: no test in this module
-  activates a demo profile, which is what `assertThat(registry.getListenerContainerIds()).isEmpty()` records. None
-  of the eight chapter configurations is ever instantiated, so a typo in a `containerFactory` name, a renamed
-  factory `@Bean` or a misspelled `@Profile` string still passes the whole suite and only fails with
-  `NoSuchBeanDefinitionException` when that demo is run. Covering those would take a test that refreshes the
-  context once per profile in `Catalogue`.
+  RF 3, a one-node broker would refuse them anyway) and `fail-fast` too. Know its limit: it activates no demo
+  profile, which is what `assertThat(registry.getListenerContainerIds()).isEmpty()` records, so none of the eight
+  chapter configurations is instantiated there.
+- **`DemoProfilesTest` covers the eight chapter configurations the same way, one context per `Catalogue` profile.**
+  Without it, a typo in a `containerFactory` name, a renamed factory `@Bean` or a misspelled `@Profile` string would
+  pass the suite and only fail with `NoSuchBeanDefinitionException` when that demo is run. It starts
+  `SpringTweaksApplication` with `<profile>,test` and `tweaks.demo.run=false` (`DemoSupport` then hands out a no-op
+  runner instead of the demo body) and asserts the exact listener container ids, the `@RetryableTopic` ones
+  (`errors-retryable-retry-1000` … `errors-retryable-dlt`) included. It is what made moving the beans into the
+  `recipe` packages safe.
 - **`TemplateListenerRoundTripTest`: start the container yourself.** `spring.kafka.listener.auto-startup=false`
   (application.yml, chapter 16) applies to tests as well, so the test starts the container from the registry and
   waits with `ContainerTestUtils.waitForAssignment(container, 3)` before sending; without the wait the first records
@@ -114,7 +162,7 @@ laptop, 11 of them JVM and context start-up.)
 |---|---|
 | "does this yml do what I think" | `Binder` → `KafkaProperties` → `build*Properties()`, assert the client keys |
 | a service that only sends | `MockProducerFactory` with a `MockProducer` whose `close(Duration)` is a no-op; assert `history()` |
-| the wiring itself (factories, profiles, listener ids) | `@SpringBootTest` with `spring.kafka.admin.auto-create=false` and `fail-fast=false`, no broker |
+| the wiring itself (factories, profiles, listener ids) | `@SpringBootTest` with `spring.kafka.admin.auto-create=false` and `fail-fast=false`, no broker; one `SpringApplicationBuilder` context per profile for profile-specific beans |
 | listener logic end to end, error handlers, dead letters, share listeners | `@EmbeddedKafka` + `bootstrapServersProperty`, test-scoped `@TestConfiguration` listeners, start containers from the registry, `KafkaTestUtils` to read back, `@DirtiesContext` |
 | a share listener on the embedded broker | `brokerProperties` lowering `share.coordinator.state.topic.replication.factor` and `min.isr` to 1; group config `share.auto.offset.reset=earliest` |
 | replication, failures, racks, real timings | the Docker stack (`docker compose up -d --wait`) or Testcontainers; that is what the demos are |

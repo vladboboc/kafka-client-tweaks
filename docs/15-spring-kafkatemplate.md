@@ -1,6 +1,6 @@
 # 15 · KafkaTemplate
 
-**Demo:** `spring-template` · [TemplateDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/template/TemplateDemo.java) · [application-spring-template.yml](../spring-boot-kafka/src/main/resources/application-spring-template.yml)
+**Demo:** `spring-template` · [TemplateDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/template/TemplateDemo.java) · [application-spring-template.yml](../spring-boot-kafka/src/main/resources/application-spring-template.yml) · **Recipes:** [TemplateRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/template/recipe/TemplateRecipe.java), [SendPatterns.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/template/recipe/SendPatterns.java)
 
 ## The problem
 
@@ -35,6 +35,52 @@ flowchart LR
 | `DefaultKafkaProducerFactory.setProducerPerThread(true)` | `false` | one producer per calling thread instead of one shared producer (isolates `flush()`; needs `closeThreadBoundProducer()`) |
 | `setPhysicalCloseTimeout`, `setMaxAge` | 30 s / none | producer close budget; recreate a producer older than `maxAge` (matters for idle transactional producers) |
 | `RoutingKafkaTemplate` | — | picks a `ProducerFactory` per topic pattern (different serializers per topic); no transactions/metrics |
+
+## The code that matters
+
+How to call the template, from [SendPatterns.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/template/recipe/SendPatterns.java):
+
+<!-- recipe: spring-boot-kafka/src/main/java/io/kafkatweaks/spring/template/recipe/SendPatterns.java -->
+```java
+public static <K, V> List<SendResult<K, V>> sendAllAndWait(KafkaTemplate<K, V> template, List<ProducerRecord<K, V>> records) {
+    List<CompletableFuture<SendResult<K, V>>> futures = records.stream().map(template::send).toList();
+    CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
+    return futures.stream().map(CompletableFuture::join).toList();
+}
+```
+
+and a second producer configuration without a second bean, from
+[TemplateRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/template/recipe/TemplateRecipe.java):
+
+<!-- recipe: spring-boot-kafka/src/main/java/io/kafkatweaks/spring/template/recipe/TemplateRecipe.java -->
+```java
+public static final Map<String, Object> THROUGHPUT = Map.of(
+        ProducerConfig.LINGER_MS_CONFIG, 50,
+        ProducerConfig.BATCH_SIZE_CONFIG, 128 * 1024,
+        ProducerConfig.COMPRESSION_TYPE_CONFIG, "zstd");
+// ...
+@Bean
+CountingProducerListener producerListener() {
+    return new CountingProducerListener();
+}
+// ...
+public static <K, V> KafkaTemplate<K, V> derivedTemplate(ProducerFactory<K, V> factory, Map<String, Object> overrides) {
+    return new KafkaTemplate<>(factory, overrides);
+}
+```
+
+- **Send everything, wait once**: 15 520 records/s against 114 for `SendPatterns.sendAndWait` (`send().get()`) per
+  record, through the same auto-configured template.
+- **`derivedTemplate(factory, THROUGHPUT + a client.id)`** is its own producer from the one factory: 72.4K records/s
+  against 19.8K for the defaults. Not a bean (a second `KafkaTemplate` bean switches Boot's off), so `destroy()` it
+  when done; the `client.id` makes the copy happen and tags its metrics.
+- **A `ProducerListener` bean** (`CountingProducerListener`) sees every acknowledgement of the auto-configured
+  template: `onSuccess=2000` with no code at the call sites.
+- `SendPatterns.sendWithHeaders(...)` is the `Message<?>` API: `KafkaHeaders.TOPIC`/`KEY` steer the send, other
+  headers become record headers.
+
+The demo calls these for parts 1, 3 and 4; everything else in
+[TemplateDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/template/TemplateDemo.java) is measurement.
 
 ## Run it
 

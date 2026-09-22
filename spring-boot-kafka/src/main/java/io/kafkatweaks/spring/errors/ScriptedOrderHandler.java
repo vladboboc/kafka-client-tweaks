@@ -2,13 +2,11 @@ package io.kafkatweaks.spring.errors;
 
 import io.kafkatweaks.common.Order;
 import io.kafkatweaks.spring.TopicsConfig;
+import io.kafkatweaks.spring.errors.recipe.OrderHandler;
+import io.kafkatweaks.spring.errors.recipe.TransientFailure;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.header.Header;
 import org.springframework.context.annotation.Profile;
-import org.springframework.kafka.annotation.BackOff;
-import org.springframework.kafka.annotation.DltHandler;
-import org.springframework.kafka.annotation.KafkaListener;
-import org.springframework.kafka.annotation.RetryableTopic;
 import org.springframework.kafka.retrytopic.RetryTopicHeaders;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.stereotype.Component;
@@ -22,13 +20,14 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * The two listeners of chapter 18. Both follow {@link FailureScript}: the record key says whether the call
- * succeeds, throws a retryable {@link TransientFailure} for the first k attempts, or throws an
- * {@link IllegalArgumentException} the error handler is told never to retry. Poison pills never reach a listener.
+ * Chapter 18's stand-in for a real service behind the recipe listeners ({@code recipe/OrderListeners}). It follows
+ * {@link FailureScript}: the record key says whether the call succeeds, throws a retryable {@link TransientFailure} for
+ * the first k attempts, or throws an {@link IllegalArgumentException} the error handler is told never to retry. Poison
+ * pills never reach it. Every attempt is recorded for the demo's tables.
  */
 @Component
 @Profile("spring-error-handling")
-public class ErrorListeners {
+public class ScriptedOrderHandler implements OrderHandler {
 
     public record Attempt(long tMs, String topic, int partition, String key, int attempt, String springAttempt, long sinceSendMs, String outcome) {
     }
@@ -51,11 +50,18 @@ public class ErrorListeners {
         return List.copyOf(retryable);
     }
 
+    @Override
+    public void handle(ConsumerRecord<String, Order> record) {
+        if (record.topic().equals(TopicsConfig.ERRORS)) {
+            blocking(record);
+        } else {
+            retryable(record);   // spring.retryable and its -retry-* topics
+        }
+    }
+
     // ---- 1. blocking retries: DefaultErrorHandler with back-off, then a dead-letter topic ------------------------
 
-    @KafkaListener(id = "errors-blocking", groupId = "spring-errors-blocking", clientIdPrefix = "errors-blocking",
-            topics = TopicsConfig.ERRORS, containerFactory = "blockingRetryFactory")
-    public void blocking(ConsumerRecord<String, Order> record) {
+    private void blocking(ConsumerRecord<String, Order> record) {
         if (record.timestamp() < startedAt) {
             return;   // leftover from an earlier run
         }
@@ -78,10 +84,7 @@ public class ErrorListeners {
 
     // ---- 2. non-blocking retries: the failed record is re-published to a retry topic, the partition moves on ---------
 
-    @RetryableTopic(attempts = "4", backOff = @BackOff(delay = 1000, multiplier = 2.0), include = TransientFailure.class,
-            numPartitions = "3", autoCreateTopics = "true")
-    @KafkaListener(id = "errors-retryable", groupId = "spring-errors-retryable", clientIdPrefix = "errors-retryable", topics = TopicsConfig.RETRYABLE)
-    public void retryable(ConsumerRecord<String, Order> record) {
+    private void retryable(ConsumerRecord<String, Order> record) {
         long originalTimestamp = headerLong(record, RetryTopicHeaders.DEFAULT_HEADER_ORIGINAL_TIMESTAMP, record.timestamp());
         if (originalTimestamp < startedAt) {
             return;   // leftover from an earlier run (retry topics are not recreated between runs)
@@ -96,8 +99,8 @@ public class ErrorListeners {
         }
     }
 
-    @DltHandler
-    public void retryableDlt(ConsumerRecord<String, Order> record) {
+    @Override
+    public void parked(ConsumerRecord<String, Order> record) {
         long originalTimestamp = headerLong(record, RetryTopicHeaders.DEFAULT_HEADER_ORIGINAL_TIMESTAMP, record.timestamp());
         if (originalTimestamp < startedAt) {
             return;

@@ -1,6 +1,6 @@
 # 05 · Latency first
 
-**Demo:** `producer-low-latency` · [ProducerLowLatencyDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerLowLatencyDemo.java)
+**Demo:** `producer-low-latency` · [ProducerLowLatencyDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerLowLatencyDemo.java) · **Recipe:** [LowLatencyProducer.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/LowLatencyProducer.java)
 
 ## The problem
 
@@ -24,6 +24,35 @@ does each safety feature add to it?
 
 The floor is `request-latency-avg`: the broker round trip including replication, which no producer
 setting can remove. On this Docker stack it is 2–10 ms.
+
+## The code that matters
+
+One setting, and a warm-up. From [LowLatencyProducer.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/LowLatencyProducer.java):
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/producer/recipe/LowLatencyProducer.java -->
+```java
+public static Map<String, Object> lowLatency() {
+    return Map.of(ProducerConfig.LINGER_MS_CONFIG, 0);   // default 5 ms (4.x)
+}
+// ...
+public static void warmUp(Producer<?, ?> producer, String... topics) {
+    for (String topic : topics) {
+        producer.partitionsFor(topic);
+    }
+}
+```
+
+- **`linger.ms=0` took p50 from 9.57 ms (defaults) to 2.80 ms** for sequential sends, with `acks=all` and
+  idempotence still on. At low rates a batch never fills, so every record waits the full `linger.ms`: 55 ms with
+  chapter 02's throughput settings.
+- `lowLatencyLeaderAck()` (acks=1) bought another 0.8 ms; that is chapter 03's durability price, only for data you
+  can rebuild.
+- **Leave `batch.size` and `compression.type` alone**: a batch is sent as soon as the sender is free, and compressing
+  a batch of a few hundred bytes costs CPU for nothing.
+- `warmUp(producer, topic)` at startup keeps the metadata fetch out of the first real record's latency.
+
+The demo's `PRESETS` in [ProducerLowLatencyDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerLowLatencyDemo.java)
+go from chapter 02's throughput settings to the two recipe presets; everything else in that file is measurement.
 
 ## Run it
 

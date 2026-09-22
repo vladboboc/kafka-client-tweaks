@@ -114,8 +114,14 @@ Stops everything and deletes the data volumes, so the next `up` starts from empt
 Each plain demo lives in `plain-clients/src/main/java/io/kafkatweaks/<producer|consumer|avro>/` and is
 registered by name in [`Run.java`](../plain-clients/src/main/java/io/kafkatweaks/Run.java); each Spring demo is a
 `@Profile`-bound configuration under `spring-boot-kafka/src/main/java/io/kafkatweaks/spring/<chapter>/`, listed in
-[`Catalogue.java`](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/Catalogue.java). Both share the helpers of
-the `tweaks-common` module (package `io.kafkatweaks.common`):
+[`Catalogue.java`](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/Catalogue.java).
+
+**The tweak itself is in the `recipe` subpackage next to each demo** (`producer/recipe/`, `consumer/recipe/`,
+`avro/recipe/`, `spring/<chapter>/recipe/`): small classes with only the production code, one comment per setting.
+The demo calls its recipe and measures it; [recipes.md](recipes.md) lists every recipe with what it bought. Plain
+recipes use none of the helpers below, so they can be copied as they are.
+
+The demos share the helpers of the `tweaks-common` module (package `io.kafkatweaks.common`):
 
 | Helper | Purpose |
 |---|---|

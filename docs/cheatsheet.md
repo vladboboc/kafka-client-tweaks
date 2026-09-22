@@ -1,6 +1,7 @@
 # Cheat sheet · which knob for which goal
 
 Client defaults are Kafka 4.3 (`kafka-clients` 4.3.x). Broker/topic settings are marked **(broker)**.
+The code behind each row is in the chapter's recipe: [recipes.md](recipes.md) lists them all.
 
 ## Producer
 

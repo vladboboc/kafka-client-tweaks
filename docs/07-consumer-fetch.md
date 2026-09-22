@@ -1,6 +1,6 @@
 # 07 · The poll loop and fetch tuning
 
-**Demo:** `consumer-fetch` · [ConsumerFetchDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerFetchDemo.java)
+**Demo:** `consumer-fetch` · [ConsumerFetchDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerFetchDemo.java) · **Recipe:** [FetchTuning.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/FetchTuning.java)
 
 ## The problem
 
@@ -35,6 +35,47 @@ flowchart LR
 A detail that decides more than most settings: **the broker never re-batches.** A fetch returns the record
 batches the producer wrote, whole. Producer `batch.size`/`compression.type` (chapter 02) therefore also
 decide how many records a consumer gets per fetch.
+
+## The code that matters
+
+Three situations, three maps, from [FetchTuning.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/FetchTuning.java):
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/FetchTuning.java -->
+```java
+public static Map<String, Object> catchUp() {
+    return Map.of(
+            // Records per poll(), default 500. Only the size of the handler's batch: 50 or 500 made no difference
+            // to throughput, because the fetcher runs ahead of poll() either way.
+            ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 5000,
+            // Data per partition per fetch response, default 1 MB. This is what moves throughput: 64 KB halved it.
+            ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG, 4 * 1024 * 1024,
+            // The broker holds the fetch until this much data is available, default 1 byte ...
+            ConsumerConfig.FETCH_MIN_BYTES_CONFIG, 1024 * 1024,
+            // ... but never longer than this, default 500 ms.
+            ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG, 500);
+}
+
+public static Map<String, Object> fewerFetches(int minBytes, Duration maxWait) {
+    // ...
+}
+
+public static Map<String, Object> pollBudget(int maxPollRecords, Duration maxPollInterval) {
+    return Map.of(
+            ConsumerConfig.MAX_POLL_RECORDS_CONFIG, maxPollRecords,
+            ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, (int) maxPollInterval.toMillis());
+}
+```
+
+- **`catchUp()`** is the `big-everything` row: 120.4K records/s with 3.5 MB fetches, against 92.0K for the defaults.
+  Memory is the price: a consumer may buffer partitions × 4 MB.
+- **`fewerFetches(64 * 1024, Duration.ofSeconds(2))`** turned 35 fetches/s of 1 record into 0.33 fetches/s of 94 while
+  tailing a trickle, for up to 2 s of added latency.
+- **`pollBudget(100, ...)`** kept the 10 ms/record handler inside a 3 s `max.poll.interval.ms`; 500 records per poll
+  got the consumer kicked out of the group (`CommitFailedException`).
+- **Every `poll()` result counts**: never call `poll()` only to "wait for the assignment" and drop what it returned.
+
+The demo's `PRESETS` and its slow-handler and tailing runs apply these maps; everything else in
+[ConsumerFetchDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerFetchDemo.java) is measurement.
 
 ## Run it
 

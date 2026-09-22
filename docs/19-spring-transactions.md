@@ -1,6 +1,6 @@
 # 19 · Transactions in Spring
 
-**Demo:** `spring-transactions` · [TransactionsDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/TransactionsDemo.java) · [TxnProcessorListener.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/TxnProcessorListener.java) · [application-spring-transactions.yml](../spring-boot-kafka/src/main/resources/application-spring-transactions.yml)
+**Demo:** `spring-transactions` · [TransactionsDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/TransactionsDemo.java) · [application-spring-transactions.yml](../spring-boot-kafka/src/main/resources/application-spring-transactions.yml) · **Recipes:** [TxnRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/recipe/TxnRecipe.java), [OrderTransfer.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/recipe/OrderTransfer.java), [UppercaseProcessor.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/recipe/UppercaseProcessor.java)
 
 ## The problem
 
@@ -40,6 +40,65 @@ flowchart LR
 | `DefaultKafkaProducerFactory.setMaxAge(...)` | none | recreate idle transactional producers before the broker's `transactional.id.expiration.ms` fences them |
 | `TransactionIdSuffixStrategy` / `maxCache` | unbounded | bound the suffix pool; `maxCache ≥ concurrency` for containers |
 | not compatible | | `@RetryableTopic` (chapter 18) with container transactions; recreating a topic under a live transactional producer (see below) |
+
+## The code that matters
+
+The switch is one property in [application-spring-transactions.yml](../spring-boot-kafka/src/main/resources/application-spring-transactions.yml):
+
+<!-- recipe: spring-boot-kafka/src/main/resources/application-spring-transactions.yml -->
+```yaml
+spring:
+  kafka:
+    producer:
+      client-id: spring-txn
+      transaction-id-prefix: spring-txn-      # transactional.id = prefix + a per-producer suffix (spring-txn-0, spring-txn-1, ...)
+    consumer:
+      client-id: spring-txn
+      isolation-level: read_committed         # listeners never see records of open or aborted transactions
+```
+
+After that, an exactly-once processor has nothing transactional in it, from
+[UppercaseProcessor.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/recipe/UppercaseProcessor.java):
+
+<!-- recipe: spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/recipe/UppercaseProcessor.java -->
+```java
+@KafkaListener(id = "txn-per-batch", groupId = "spring-txn-batch", clientIdPrefix = "txn-batch", topics = TopicsConfig.TXN_IN, batch = "true")
+public void perBatch(List<ConsumerRecord<String, String>> records) {
+    probe.batchCall();
+    for (ConsumerRecord<String, String> record : records) {
+        template.send(TopicsConfig.TXN_OUT, record.key(), record.value().toUpperCase());
+        probe.sent(records, record);   // the demo's crash: throws once, in the middle of a batch
+    }
+}
+```
+
+and a service method is one annotation, from [OrderTransfer.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/recipe/OrderTransfer.java):
+
+<!-- recipe: spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/recipe/OrderTransfer.java -->
+```java
+@Transactional
+public void transfer(String batch, boolean fail) {
+    for (int i = 1; i <= 3; i++) {
+        template.send(TopicsConfig.TXN_OUT, batch + "-" + i, "transfer " + batch + " part " + i);
+    }
+    // ...
+}
+```
+
+- **`transaction-id-prefix`** makes the factory transactional and makes Boot create a `KafkaTransactionManager` and hand
+  it to the listener containers: the container begins a transaction per delivery, the template's sends join it, and
+  the input offsets commit with it.
+- **`batch = "true"`** is a transaction per poll: 1 200 records in 755 ms, crash and redelivery included, 0 duplicates in
+  the read_committed output. The record listener (a transaction per record) needed 33 s for 200.
+- **`@Transactional`** (needs `@EnableTransactionManagement`, on
+  [TxnRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/recipe/TxnRecipe.java)): transfer t1
+  committed its 3 records, transfer t2 threw after sending and committed 0.
+- `TxnRecipe.sendAll(template, records)` is `executeInTransaction` for a few records without a listener;
+  `TxnRecipe.nonTransactionalTemplate(factory)` is the escape hatch for a send outside any transaction.
+
+The demo runs the parts in turn and reads the output with both isolation levels; everything else in
+[TransactionsDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/TransactionsDemo.java) and
+[TxnProbe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/TxnProbe.java) is measurement.
 
 ## Run it
 

@@ -8,6 +8,7 @@ import io.kafkatweaks.common.Payloads;
 import io.kafkatweaks.common.Table;
 import io.kafkatweaks.common.Topics;
 import io.kafkatweaks.common.Workload;
+import io.kafkatweaks.producer.recipe.ThroughputProducer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -18,12 +19,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Chapter 02: throughput. Runs the same workload under a matrix of batching and compression settings
- * and prints them side by side. Then shows what happens when the accumulator fills up.
+ * Chapter 02: throughput. Measures {@link ThroughputProducer}; everything else in this file is measurement.
+ * Runs the same workload under a matrix of batching and compression settings and prints them side by side.
+ * Then shows what happens when the accumulator fills up.
  *
  * <pre>
  *   records=30000        records per run
@@ -36,19 +36,21 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class ProducerBatchingDemo implements Demo {
 
     /** Preset name → overrides on top of the client defaults. Order is the order of the tables. */
-    static final Map<String, Map<String, String>> PRESETS = new LinkedHashMap<>();
+    static final Map<String, Map<String, ?>> PRESETS = new LinkedHashMap<>();
 
     static {
-        PRESETS.put("linger0", Map.of(ProducerConfig.LINGER_MS_CONFIG, "0"));
+        // One knob at a time first: linger.ms alone, then batch.size, to show which one moves the numbers.
+        PRESETS.put("linger0", Map.of(ProducerConfig.LINGER_MS_CONFIG, 0));
         PRESETS.put("defaults", Map.of());
-        PRESETS.put("linger20", Map.of(ProducerConfig.LINGER_MS_CONFIG, "20"));
-        PRESETS.put("linger20-batch64k", Map.of(ProducerConfig.LINGER_MS_CONFIG, "20", ProducerConfig.BATCH_SIZE_CONFIG, "65536"));
-        PRESETS.put("lz4", Map.of(ProducerConfig.LINGER_MS_CONFIG, "20", ProducerConfig.BATCH_SIZE_CONFIG, "65536", ProducerConfig.COMPRESSION_TYPE_CONFIG, "lz4"));
-        PRESETS.put("snappy", Map.of(ProducerConfig.LINGER_MS_CONFIG, "20", ProducerConfig.BATCH_SIZE_CONFIG, "65536", ProducerConfig.COMPRESSION_TYPE_CONFIG, "snappy"));
-        PRESETS.put("zstd", Map.of(ProducerConfig.LINGER_MS_CONFIG, "20", ProducerConfig.BATCH_SIZE_CONFIG, "65536", ProducerConfig.COMPRESSION_TYPE_CONFIG, "zstd"));
-        PRESETS.put("zstd-level9", Map.of(ProducerConfig.LINGER_MS_CONFIG, "20", ProducerConfig.BATCH_SIZE_CONFIG, "65536", ProducerConfig.COMPRESSION_TYPE_CONFIG, "zstd", ProducerConfig.COMPRESSION_ZSTD_LEVEL_CONFIG, "9"));
-        PRESETS.put("gzip", Map.of(ProducerConfig.LINGER_MS_CONFIG, "20", ProducerConfig.BATCH_SIZE_CONFIG, "65536", ProducerConfig.COMPRESSION_TYPE_CONFIG, "gzip"));
-        PRESETS.put("linger100-batch256k-zstd", Map.of(ProducerConfig.LINGER_MS_CONFIG, "100", ProducerConfig.BATCH_SIZE_CONFIG, "262144", ProducerConfig.COMPRESSION_TYPE_CONFIG, "zstd"));
+        PRESETS.put("linger20", Map.of(ProducerConfig.LINGER_MS_CONFIG, 20));
+        PRESETS.put("linger20-batch64k", Map.of(ProducerConfig.LINGER_MS_CONFIG, 20, ProducerConfig.BATCH_SIZE_CONFIG, 64 * 1024));
+        // The recipe under test: the same batching with each codec, then the chapter's best combination.
+        PRESETS.put("lz4", ThroughputProducer.batching(20, 64 * 1024, "lz4"));
+        PRESETS.put("snappy", ThroughputProducer.batching(20, 64 * 1024, "snappy"));
+        PRESETS.put("zstd", ThroughputProducer.batching(20, 64 * 1024, "zstd"));
+        PRESETS.put("zstd-level9", with(ThroughputProducer.batching(20, 64 * 1024, "zstd"), ProducerConfig.COMPRESSION_ZSTD_LEVEL_CONFIG, 9));
+        PRESETS.put("gzip", ThroughputProducer.batching(20, 64 * 1024, "gzip"));
+        PRESETS.put("linger100-batch256k-zstd", ThroughputProducer.highThroughput());
     }
 
     @Override
@@ -70,7 +72,7 @@ public final class ProducerBatchingDemo implements Demo {
 
         var results = new ArrayList<Workload.Result>();
         for (String name : runs) {
-            Map<String, String> preset = PRESETS.get(name);
+            Map<String, ?> preset = PRESETS.get(name);
             if (preset == null) {
                 System.err.println("unknown preset '" + name + "', known: " + PRESETS.keySet());
                 continue;
@@ -126,33 +128,27 @@ public final class ProducerBatchingDemo implements Demo {
 
     private static Object[] bufferRun(Args args, String topic, int size, long records, long bufferMemory, long maxBlockMs) {
         Properties props = Env.producer("batching-buffer-" + bufferMemory);
-        props.put(ProducerConfig.BUFFER_MEMORY_CONFIG, String.valueOf(bufferMemory));
-        props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, String.valueOf(maxBlockMs));
+        props.putAll(ThroughputProducer.bounded(bufferMemory, maxBlockMs));   // <- the recipe under test
         props.put(ProducerConfig.LINGER_MS_CONFIG, "100");
         props.put(ProducerConfig.BATCH_SIZE_CONFIG, String.valueOf(64 * 1024));
         args.applyOverrides(props);
 
         long attempted = 0;
-        var rejected = new AtomicLong();
-        var firstError = new AtomicReference<Exception>();
+        var failures = new ThroughputProducer.FailureCounter();
         try (var producer = new KafkaProducer<String, String>(props)) {
             producer.partitionsFor(topic);
             for (; attempted < records; attempted++) {
                 // The callback is the only place a full accumulator becomes visible: send() returns a failed
                 // future instead of throwing, so a producer that ignores both counts rejected records as sent.
-                producer.send(new ProducerRecord<>(topic, null, Payloads.random(size)), (md, ex) -> {
-                    if (ex != null) {
-                        rejected.incrementAndGet();
-                        firstError.compareAndSet(null, ex);
-                    }
-                });
+                producer.send(new ProducerRecord<>(topic, null, Payloads.random(size)), failures);
             }
             producer.flush();   // every callback has run by the time flush() returns
             var m = producer.metrics();
-            long acked = attempted - rejected.get();
-            String outcome = rejected.get() == 0
+            long rejected = failures.failed();
+            long acked = attempted - rejected;
+            String outcome = rejected == 0
                     ? "all sent"
-                    : "%d of %d rejected: %s".formatted(rejected.get(), attempted, describe(firstError.get()));
+                    : "%d of %d rejected: %s".formatted(rejected, attempted, describe(failures.firstFailure()));
             // Counts and config values are exact: format them here so the humanising number formatter cannot round them.
             return new Object[] {String.valueOf(bufferMemory), String.valueOf(maxBlockMs), String.valueOf(acked), outcome,
                     MetricsReport.value(m, MetricsReport.PRODUCER, "bufferpool-wait-ratio"),
@@ -163,5 +159,12 @@ public final class ProducerBatchingDemo implements Demo {
     /** Class name only: the full "Failed to allocate 65536 bytes within ..." message would stretch the table. */
     private static String describe(Exception e) {
         return e == null ? "" : e.getClass().getSimpleName();
+    }
+
+    /** A preset plus one more setting, for the variations the recipe does not name. */
+    private static Map<String, ?> with(Map<String, ?> preset, String key, Object value) {
+        var copy = new LinkedHashMap<String, Object>(preset);
+        copy.put(key, value);
+        return copy;
     }
 }

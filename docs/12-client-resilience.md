@@ -1,6 +1,6 @@
 # 12 · Client resilience and operations
 
-**Demo:** `client-resilience` · [ClientResilienceDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ClientResilienceDemo.java)
+**Demo:** `client-resilience` · [ClientResilienceDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ClientResilienceDemo.java) · **Recipe:** [ResilientClients.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/ResilientClients.java)
 
 ## The problem
 
@@ -25,6 +25,47 @@ client is doing.
 | `interceptor.classes` | none | `ProducerInterceptor` / `ConsumerInterceptor` implementations run inside the client on send/ack/poll/commit |
 | `enable.metrics.push` | `true` | KIP-714: the client pushes its metrics to the brokers when an operator has created a subscription (`kafka-client-metrics.sh`) |
 | `client.id` | random | tag on every metric, quota key, appears in broker logs. Always set it |
+
+## The code that matters
+
+From [ResilientClients.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/ResilientClients.java):
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/ResilientClients.java -->
+```java
+public static Map<String, Object> rackAware(String rack) {
+    return Map.of(CommonClientConfigs.CLIENT_RACK_CONFIG, rack);
+}
+// ...
+public static Map<String, Object> outageTolerantProducer() {
+    return Map.of(
+            ProducerConfig.ACKS_CONFIG, "all",                         // complete: every in-sync replica has it
+            ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true,            // safe: a retried batch is stored once, in order
+            ProducerConfig.RETRIES_CONFIG, Integer.MAX_VALUE,          // retry until the delivery budget is spent ...
+            ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 120_000,        // ... which must outlast leader election + metadata refresh
+            ProducerConfig.RETRY_BACKOFF_MS_CONFIG, 100L,              // first pause between retries, doubling ...
+            ProducerConfig.RETRY_BACKOFF_MAX_MS_CONFIG, 1000L,         // ... up to this. Raise both on fleets of thousands
+            CommonClientConfigs.RECONNECT_BACKOFF_MS_CONFIG, 50L,      // same idea per broker connection, so a returning
+            CommonClientConfigs.RECONNECT_BACKOFF_MAX_MS_CONFIG, 1000L,   // broker is not stampeded by reconnects
+            // When EVERY known broker is gone (a replaced node pool), re-resolve bootstrap.servers instead of spinning
+            // on stale metadata. Only works if bootstrap.servers is a stable DNS name, a load balancer or all brokers.
+            CommonClientConfigs.METADATA_RECOVERY_STRATEGY_CONFIG, "rebootstrap");
+}
+```
+
+- **`rackAware("rack-b")`**: 238.3K of the ~240K bytes came from the rack-b broker instead of each partition's leader
+  (needs `broker.rack` and the `RackAwareReplicaSelector` on the brokers).
+- **`outageTolerantProducer()` is the 4.x defaults, written out**: that is what rode through the broker restart with
+  36 000 sent, 36 000 in the topic, 0 failed, 0 duplicates. The tweak is to *not* lower them.
+- **Interceptors** are two small classes, registered by name with `interceptor.classes`:
+  [StampingProducerInterceptor.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/StampingProducerInterceptor.java)
+  stamps a `sent-at` header, [LatencyConsumerInterceptor.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/LatencyConsumerInterceptor.java)
+  reads it back.
+- `ResilientClients.instanceId(producer, timeout)` is the KIP-714 client instance id, empty until the background
+  telemetry handshake has completed.
+
+The demo applies each of these once; everything else in
+[ClientResilienceDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ClientResilienceDemo.java) is
+measurement (including stopping and starting the broker).
 
 ## Run it
 

@@ -8,13 +8,14 @@ import io.kafkatweaks.common.MetricsReport;
 import io.kafkatweaks.common.Table;
 import io.kafkatweaks.common.Topics;
 import io.kafkatweaks.common.Seed;
+import io.kafkatweaks.consumer.recipe.AtLeastOnceConsumer;
+import io.kafkatweaks.consumer.recipe.AtLeastOnceConsumer.CommitPoint;
+import io.kafkatweaks.consumer.recipe.Replay;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.NoOffsetForPartitionException;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
-import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
 import org.apache.kafka.common.TopicPartition;
 
 import java.time.Duration;
@@ -25,10 +26,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
-import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Chapter 08: offsets are the consumer's only durable state. Where you commit them decides what a crash costs.
+ * Measures {@link AtLeastOnceConsumer} and {@link Replay}; everything else in this file is measurement.
  * <ol>
  *   <li>the same crash under three commit strategies: at-most-once, at-least-once, at-least-once + idempotent handler</li>
  *   <li>auto-commit: watching committed offset trail the position, and what it implies</li>
@@ -94,40 +96,50 @@ public final class ConsumerOffsetsDemo implements Demo {
     /** Returns the number of records the handler processed in this run. */
     private static int consume(Args args, String group, Strategy strategy, int crashAfter, Map<String, Integer> seen, Set<String> handled) {
         Properties props = Env.consumer(group, "offsets-" + strategy.name().toLowerCase());
-        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+        props.putAll(AtLeastOnceConsumer.manualCommits());
         props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "500");
         args.applyOverrides(props);
-        int processed = 0;
+        var processed = new AtomicInteger();
+        // The "work": count the record, then crash (throw) once crashAfter records are done. The idempotent variant
+        // stores the id first, the way a real handler stores it in the same transaction as its side effect.
+        AtLeastOnceConsumer.RecordHandler<String, String> work = r -> {
+            if (strategy == Strategy.COMMIT_AFTER_IDEMPOTENT) {
+                handled.add(id(r));
+            }
+            seen.merge(id(r), 1, Integer::sum);
+            if (processed.incrementAndGet() >= crashAfter) {
+                throw new SimulatedCrash();
+            }
+        };
+        // The recipe under test: where the commit goes, and whether duplicates are recognised.
+        var handler = strategy == Strategy.COMMIT_AFTER_IDEMPOTENT
+                ? AtLeastOnceConsumer.skipDuplicates(ConsumerOffsetsDemo::id, handled::contains, work)
+                : work;
+        var commitPoint = strategy == Strategy.COMMIT_BEFORE_PROCESSING ? CommitPoint.BEFORE_HANDLING : CommitPoint.AFTER_HANDLING;
         try (var consumer = new KafkaConsumer<String, String>(props)) {
             consumer.subscribe(List.of(TOPIC));
+            var loop = new AtLeastOnceConsumer<>(consumer, commitPoint, handler);
             int idle = 0;
             while (idle < 4) {
-                ConsumerRecords<String, String> batch = consumer.poll(Duration.ofMillis(500));
-                if (batch.isEmpty()) {
-                    idle++;
-                    continue;
-                }
-                idle = 0;
-                if (strategy == Strategy.COMMIT_BEFORE_PROCESSING) {
-                    consumer.commitSync();   // position is already past this batch: commits "we will have processed these"
-                }
-                for (ConsumerRecord<String, String> r : batch) {
-                    String id = r.partition() + "-" + r.offset();
-                    if (strategy == Strategy.COMMIT_AFTER_IDEMPOTENT && !handled.add(id)) {
-                        continue;   // already done in a previous batch/run: skip
-                    }
-                    seen.merge(id, 1, Integer::sum);
-                    processed++;
-                    if (processed >= crashAfter) {
-                        return processed;   // crash: try-with-resources closes the consumer, nothing is committed
-                    }
-                }
-                if (strategy != Strategy.COMMIT_BEFORE_PROCESSING) {
-                    consumer.commitSync();   // commits the position after the batch: "these are done"
-                }
+                idle = loop.pollOnce(Duration.ofMillis(500)) == 0 ? idle + 1 : 0;
             }
+        } catch (SimulatedCrash crash) {
+            // crash: try-with-resources already closed the consumer, and nothing of the interrupted batch was committed
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
         }
-        return processed;
+        return processed.get();
+    }
+
+    private static String id(ConsumerRecord<String, String> r) {
+        return r.partition() + "-" + r.offset();
+    }
+
+    /** The demo's stand-in for a JVM crash in the middle of a batch. */
+    private static final class SimulatedCrash extends RuntimeException {
+        SimulatedCrash() {
+            super("simulated crash", null, false, false);
+        }
     }
 
     // ------------------------------------------------------------------ 2. auto-commit timing
@@ -219,23 +231,16 @@ public final class ConsumerOffsetsDemo implements Demo {
             consumer.seekToBeginning(tps);
             table.row("seekToBeginning", countToEnd(consumer));
 
-            Map<TopicPartition, Long> end = consumer.endOffsets(tps);
-            end.forEach((tp, off) -> consumer.seek(tp, Math.max(0, off - 100)));
+            Replay.lastRecords(consumer, 100);   // <- the recipe under test, here and below
             table.row("seek(endOffset - 100) on each partition", countToEnd(consumer));
 
             for (var when : List.of(Map.entry("one hour ago", Instant.now().minusSeconds(3600)), Map.entry("now", Instant.now()))) {
-                var query = new HashMap<TopicPartition, Long>();
-                tps.forEach(tp -> query.put(tp, when.getValue().toEpochMilli()));
-                // offsetsForTimes = the first offset whose record timestamp is >= the given time (null when none is)
-                Map<TopicPartition, OffsetAndTimestamp> byTime = consumer.offsetsForTimes(query);
-                byTime.forEach((tp, ot) -> consumer.seek(tp, ot == null ? end.get(tp) : ot.offset()));
+                Replay.fromTime(consumer, when.getValue());
                 table.row("offsetsForTimes(" + when.getKey() + ") then seek", countToEnd(consumer));
             }
 
             // Committing a chosen offset is how you "rewind" a whole group from the outside as well:
-            var rewind = new TreeMap<TopicPartition, OffsetAndMetadata>((a, b) -> a.partition() - b.partition());
-            tps.forEach(tp -> rewind.put(tp, new OffsetAndMetadata(0)));
-            consumer.commitSync(rewind);
+            Replay.rewindGroup(consumer);
             table.row("commitSync(offset 0 for every partition)", "group now restarts from 0 (see also: kafka-consumer-groups --reset-offsets)");
             table.print("");
 

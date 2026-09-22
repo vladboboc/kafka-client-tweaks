@@ -1,6 +1,7 @@
 package io.kafkatweaks.spring.share;
 
 import io.kafkatweaks.spring.TweaksSpringTest;
+import io.kafkatweaks.spring.share.recipe.ShareConfig;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AlterConfigOp;
 import org.apache.kafka.clients.admin.ConfigEntry;

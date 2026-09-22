@@ -1,6 +1,6 @@
 # 13 · Serialization with the Schema Registry and Avro
 
-**Demo:** `avro-roundtrip` · [AvroDemo.java](../plain-clients/src/main/java/io/kafkatweaks/avro/AvroDemo.java) · schema: [Order.avsc](../tweaks-common/src/main/avro/Order.avsc)
+**Demo:** `avro-roundtrip` · [AvroDemo.java](../plain-clients/src/main/java/io/kafkatweaks/avro/AvroDemo.java) · schema: [Order.avsc](../tweaks-common/src/main/avro/Order.avsc) · **Recipes:** [AvroClients.java](../plain-clients/src/main/java/io/kafkatweaks/avro/recipe/AvroClients.java), [AvroTrust.java](../tweaks-common/src/main/java/io/kafkatweaks/avro/AvroTrust.java)
 
 ## The problem
 
@@ -38,6 +38,48 @@ schema once, caches it, and decodes. Neither side sends the schema itself.
 
 Build side: `avro-maven-plugin` generates `io.kafkatweaks.avro.generated.Order` from the `.avsc` with
 `stringType=String` and `enableDecimalLogicalType=true` (`BigDecimal` instead of `ByteBuffer`).
+
+## The code that matters
+
+The production producer, from [AvroClients.java](../plain-clients/src/main/java/io/kafkatweaks/avro/recipe/AvroClients.java):
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/avro/recipe/AvroClients.java -->
+```java
+public static Map<String, Object> productionProducer(String schemaRegistryUrl) {
+    var config = new HashMap<>(producer(schemaRegistryUrl));
+    // Default true: any refactor of the class silently becomes a new schema version, registered by whichever
+    // service happens to deploy first.
+    config.put(AbstractKafkaSchemaSerDeConfig.AUTO_REGISTER_SCHEMAS, false);
+    // Serialize with the subject's latest registered version instead of the class's own schema. With the default
+    // latest.compatibility.strict=true the serializer refuses if the class is not compatible with that version.
+    config.put(AbstractKafkaSchemaSerDeConfig.USE_LATEST_VERSION, true);
+    return config;
+}
+```
+
+and the one call Avro ≥ 1.12.1 needs before the first generated class is serialized or read, from
+[AvroTrust.java](../tweaks-common/src/main/java/io/kafkatweaks/avro/AvroTrust.java):
+
+<!-- recipe: tweaks-common/src/main/java/io/kafkatweaks/avro/AvroTrust.java -->
+```java
+var previous = ClassSecurityValidator.getGlobal();
+var generated = ClassSecurityValidator.builder().add(Order.class).build();
+ClassSecurityValidator.setGlobal(clazz -> previous.isTrusted(clazz) || generated.isTrusted(clazz));
+```
+
+- **`producer(url)`** alone (`KafkaAvroSerializer` + `schema.registry.url`) gave 37.39 bytes per record against 129
+  for JSON: a 5-byte header (magic byte + schema id) and Avro binary without field names.
+- **`productionProducer(url)`** is the pair to run with: schemas are registered by a pipeline, and a send against an
+  unknown subject fails (`Subject ... not found`) instead of registering whatever the code happens to contain.
+- **Trust the generated classes once, at startup** (`AvroTrust.trustGeneratedClasses()`): the first send below fails
+  with `SecurityException: Forbidden ...` until they are. It is a JVM-wide switch, so it is a call of its own and not
+  part of any config map.
+- Consumers: `specificConsumer(url)` for the generated classes, `latestSchemaConsumer(url)` for `GenericRecord`s in
+  the subject's latest shape (old records get the new fields' defaults).
+
+The demo's producers and consumers are built from these maps; everything else in
+[AvroDemo.java](../plain-clients/src/main/java/io/kafkatweaks/avro/AvroDemo.java) is measurement and schema evolution
+against the registry.
 
 ## Run it
 

@@ -9,37 +9,34 @@ import io.kafkatweaks.common.Payloads;
 import io.kafkatweaks.common.Table;
 import io.kafkatweaks.common.Topics;
 import io.kafkatweaks.common.Seed;
+import io.kafkatweaks.consumer.recipe.LatencyConsumerInterceptor;
+import io.kafkatweaks.consumer.recipe.ResilientClients;
+import io.kafkatweaks.consumer.recipe.StampingProducerInterceptor;
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.consumer.ConsumerInterceptor;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
-import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
-import org.apache.kafka.clients.producer.ProducerInterceptor;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
-import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.header.Header;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.TreeMap;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 
 /**
  * Chapter 12: the knobs that decide how a client behaves when the cluster misbehaves, plus the hooks
- * operators use to see what clients are doing.
+ * operators use to see what clients are doing. Measures {@link ResilientClients} and the two interceptors of the
+ * recipe package; everything else in this file is measurement.
  * <ol>
  *   <li>client.rack: follower fetching, and where the bytes actually come from</li>
  *   <li>a broker dies mid-stream: retries, idempotence, backoffs, and how many records were lost (none)</li>
@@ -101,7 +98,7 @@ public final class ClientResilienceDemo implements Demo {
     private static Object[] fetchBytesPerNode(Args args, String label, String rack) {
         Properties props = Env.consumer("resilience-rack-" + System.nanoTime(), "resilience-rack");
         if (rack != null) {
-            props.put(CommonClientConfigs.CLIENT_RACK_CONFIG, rack);
+            props.putAll(ResilientClients.rackAware(rack));   // <- the recipe under test
         }
         args.applyOverrides(props);
         var perNode = new TreeMap<Integer, Double>();
@@ -145,6 +142,7 @@ public final class ClientResilienceDemo implements Demo {
                    the producer refreshes metadata and retries; nothing is lost, nothing is duplicated.
                 %n""", rate, seconds);
         Properties props = Env.producer("resilience-failure");
+        props.putAll(ResilientClients.outageTolerantProducer());   // <- the recipe under test: the 4.x defaults, written out
         args.applyOverrides(props);
         Knobs.printProducer(props, ProducerConfig.RETRIES_CONFIG, ProducerConfig.RETRY_BACKOFF_MS_CONFIG,
                 ProducerConfig.RETRY_BACKOFF_MAX_MS_CONFIG, ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG,
@@ -245,65 +243,6 @@ public final class ClientResilienceDemo implements Demo {
 
     // ------------------------------------------------------------------ 3. interceptors
 
-    /** Adds a header on the way out and counts acknowledgements. Configured by class name, so it needs a public no-arg constructor. */
-    public static final class StampingProducerInterceptor implements ProducerInterceptor<String, String> {
-        static final AtomicInteger SENT = new AtomicInteger();
-        static final AtomicInteger ACKED = new AtomicInteger();
-
-        @Override
-        public ProducerRecord<String, String> onSend(ProducerRecord<String, String> record) {
-            record.headers().add("sent-at", Long.toString(System.currentTimeMillis()).getBytes(StandardCharsets.UTF_8));
-            SENT.incrementAndGet();
-            return record;
-        }
-
-        @Override
-        public void onAcknowledgement(RecordMetadata metadata, Exception exception) {
-            ACKED.incrementAndGet();
-        }
-
-        @Override
-        public void close() {
-        }
-
-        @Override
-        public void configure(Map<String, ?> configs) {
-        }
-    }
-
-    /** Measures produce-to-consume latency from the header and counts commits. */
-    public static final class LatencyConsumerInterceptor implements ConsumerInterceptor<String, String> {
-        static final AtomicLong LATENCY_SUM = new AtomicLong();
-        static final AtomicInteger RECORDS = new AtomicInteger();
-        static final AtomicInteger COMMITS = new AtomicInteger();
-
-        @Override
-        public ConsumerRecords<String, String> onConsume(ConsumerRecords<String, String> records) {
-            long now = System.currentTimeMillis();
-            for (var r : records) {
-                Header h = r.headers().lastHeader("sent-at");
-                if (h != null) {
-                    LATENCY_SUM.addAndGet(now - Long.parseLong(new String(h.value(), StandardCharsets.UTF_8)));
-                    RECORDS.incrementAndGet();
-                }
-            }
-            return records;   // may also filter or transform
-        }
-
-        @Override
-        public void onCommit(Map<TopicPartition, OffsetAndMetadata> offsets) {
-            COMMITS.incrementAndGet();
-        }
-
-        @Override
-        public void close() {
-        }
-
-        @Override
-        public void configure(Map<String, ?> configs) {
-        }
-    }
-
     private static void interceptors(Args args) {
         System.out.println("""
 
@@ -311,14 +250,14 @@ public final class ClientResilienceDemo implements Demo {
                    name (interceptor.classes). Tracing agents, schema checks, header stamping, audit counters live here.
                 """);
         Properties pp = Env.producer("resilience-interceptor");
-        pp.put(ProducerConfig.INTERCEPTOR_CLASSES_CONFIG, StampingProducerInterceptor.class.getName());
+        pp.put(ProducerConfig.INTERCEPTOR_CLASSES_CONFIG, StampingProducerInterceptor.class.getName());   // <- the recipe under test
         try (var producer = new KafkaProducer<String, String>(args.applyOverrides(pp))) {
             for (int i = 0; i < 500; i++) {
                 producer.send(new ProducerRecord<>(TOPIC, "stamped-" + i, "x"));
             }
         }
         Properties cp = Env.consumer("resilience-interceptor-" + System.nanoTime(), "resilience-interceptor");
-        cp.put(ConsumerConfig.INTERCEPTOR_CLASSES_CONFIG, LatencyConsumerInterceptor.class.getName());
+        cp.put(ConsumerConfig.INTERCEPTOR_CLASSES_CONFIG, LatencyConsumerInterceptor.class.getName());   // <- and its counterpart
         try (var consumer = new KafkaConsumer<String, String>(args.applyOverrides(cp))) {
             consumer.subscribe(List.of(TOPIC));
             int idle = 0;
@@ -356,8 +295,8 @@ public final class ClientResilienceDemo implements Demo {
             try {
                 // The handshake (GetTelemetrySubscriptions) runs in the background on the sender thread; the id is
                 // null until it has completed, so a fresh client may not have one yet. Long-running clients do.
-                var id = producer.clientInstanceId(Duration.ofSeconds(5));
-                System.out.println("  producer client instance id: " + (id == null ? "not negotiated yet (null): ask again later in a long-running client" : id));
+                var id = ResilientClients.instanceId(producer, Duration.ofSeconds(5));
+                System.out.println("  producer client instance id: " + id.map(String::valueOf).orElse("not negotiated yet (null): ask again later in a long-running client"));
             } catch (Exception e) {
                 System.out.println("  clientInstanceId(): " + e.getClass().getSimpleName() + " " + e.getMessage());
             }

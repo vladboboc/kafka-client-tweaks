@@ -1,6 +1,6 @@
 # 09 · Group protocol and rebalancing
 
-**Demo:** `consumer-rebalance` · [ConsumerRebalanceDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerRebalanceDemo.java)
+**Demo:** `consumer-rebalance` · [ConsumerRebalanceDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerRebalanceDemo.java) · **Recipes:** [GroupProtocols.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/GroupProtocols.java), [CommitOnRevoke.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/CommitOnRevoke.java)
 
 ## The problem
 
@@ -22,6 +22,69 @@ and the client still defaults to the older one.
 
 Other knobs: `ConsumerRebalanceListener` (`onPartitionsRevoked` is where you commit before losing a
 partition), `group.consumer.assignors` and `group.consumer.migration.policy` on the broker.
+
+## The code that matters
+
+The protocol is one setting, from [GroupProtocols.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/GroupProtocols.java):
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/GroupProtocols.java -->
+```java
+public static Map<String, Object> consumerProtocol() {
+    return Map.of(ConsumerConfig.GROUP_PROTOCOL_CONFIG, "consumer");
+}
+// ...
+public static Map<String, Object> classicCooperative() {
+    return Map.of(
+            ConsumerConfig.GROUP_PROTOCOL_CONFIG, "classic",
+            ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, CooperativeStickyAssignor.class.getName());
+}
+// ...
+public static Map<String, Object> staticMember(String instanceId) {
+    return Map.of(ConsumerConfig.GROUP_INSTANCE_ID_CONFIG, instanceId);
+}
+```
+
+and the listener that commits before a partition moves, from
+[CommitOnRevoke.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/CommitOnRevoke.java)
+(`consumer.subscribe(topics, new CommitOnRevoke(consumer))`, then `markDone(record)` after each record):
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/CommitOnRevoke.java -->
+```java
+public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
+    var revoked = new HashMap<TopicPartition, OffsetAndMetadata>();
+    for (TopicPartition partition : partitions) {
+        OffsetAndMetadata offset = done.remove(partition);
+        if (offset != null) {
+            revoked.put(partition, offset);
+        }
+    }
+    if (!revoked.isEmpty()) {
+        consumer.commitSync(revoked);   // synchronous: the partition must not move before its progress is stored
+    }
+    delegate.onPartitionsRevoked(partitions);
+}
+
+@Override
+public void onPartitionsLost(Collection<TopicPartition> partitions) {
+    partitions.forEach(done::remove);   // too late: another member may own them already, a commit would fail or undo its progress
+    delegate.onPartitionsLost(partitions);
+}
+```
+
+- **`consumerProtocol()`** (KIP-848): member A gave up 3 partitions when B joined and 1 when C joined, and kept
+  consuming the others. Classic with the eager `RangeAssignor` took all 6, then 3, from everyone, every time.
+- **`classicCooperative()`** gives the same incremental shape while you are still on the classic protocol.
+- **`staticMember("instance-B")`**: B's restart within the session timeout moved nothing; B got `[3,4]` back.
+- **`onPartitionsLost` must be overridden**: the interface's default forwards to `onPartitionsRevoked`, which would
+  commit partitions another member already owns.
+
+The demo's scenarios are built from `GroupProtocols` (the eager `RangeAssignor` row stays inline as the anti-pattern),
+and every member subscribes with a `CommitOnRevoke` wrapped around the timeline listener. The members never mark a
+record done, so it has nothing to commit and the timings stay those of the rebalance alone; `CommitOnRevokeTest`
+covers the commit path with `MockConsumer`. Everything else in
+[ConsumerRebalanceDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerRebalanceDemo.java) is
+measurement; its members also use the clean-shutdown pattern (`running` flag, `wakeup()`, `WakeupException`,
+`close()` in `finally`) that the `CommitOnRevoke` Javadoc spells out.
 
 ## Run it
 

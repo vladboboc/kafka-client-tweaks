@@ -3,6 +3,7 @@ package io.kafkatweaks.spring;
 import io.kafkatweaks.common.Args;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.utils.AppInfoParser;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
@@ -32,10 +33,13 @@ public class DemoSupport {
 
     private final KafkaProperties kafka;
     private final KafkaListenerEndpointRegistry registry;
+    private final boolean runDemos;
 
-    public DemoSupport(KafkaProperties kafka, KafkaListenerEndpointRegistry registry) {
+    /** @param runDemos {@code tweaks.demo.run=false} wires a demo profile without running its body (DemoProfilesTest) */
+    public DemoSupport(KafkaProperties kafka, KafkaListenerEndpointRegistry registry, @Value("${tweaks.demo.run:true}") boolean runDemos) {
         this.kafka = kafka;
         this.registry = registry;
+        this.runDemos = runDemos;
     }
 
     public static int exitCode() {
@@ -44,6 +48,9 @@ public class DemoSupport {
 
     /** Wraps a demo body into the ApplicationRunner a chapter's {@code @Profile} configuration exposes as a bean. */
     public ApplicationRunner demo(String name, Body body) {
+        if (!runDemos) {
+            return applicationArguments -> { };
+        }
         return applicationArguments -> {
             Catalogue.Entry entry = Catalogue.find(name).orElseThrow();
             // Non-option args only: "--spring.kafka.x=y" is a Spring property, not a demo knob.

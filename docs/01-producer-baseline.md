@@ -1,6 +1,6 @@
 # 01 · Producer anatomy, defaults and metrics
 
-**Demo:** `producer-baseline` · [ProducerBaselineDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerBaselineDemo.java)
+**Demo:** `producer-baseline` · [ProducerBaselineDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerBaselineDemo.java) · **Recipe:** [ProducerBasics.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ProducerBasics.java)
 
 Before tuning anything, know what happens between `send()` and the callback, what the defaults are, and where
 the numbers come from. Every later producer chapter changes one group of knobs and compares against this run.
@@ -38,6 +38,33 @@ flowchart LR
 | `delivery.timeout.ms` / `request.timeout.ms` | 120000 / 30000 | |
 | `partitioner.class` | `null` = built-in sticky partitioner | `DefaultPartitioner`/`UniformStickyPartitioner` classes were **removed** in 4.0 |
 | `metadata.recovery.strategy` | `rebootstrap` | client re-reads `bootstrap.servers` when all known brokers are gone |
+
+## The code that matters
+
+Nothing is tuned in this chapter on purpose: the 4.x defaults are the safe ones. What matters is how `send()` is
+called. From [ProducerBasics.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ProducerBasics.java):
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ProducerBasics.java -->
+```java
+public static <K, V> void send(Producer<K, V> producer, ProducerRecord<K, V> record, Consumer<Exception> onFailure) {
+    producer.send(record, (metadata, exception) -> {
+        if (exception != null) {
+            onFailure.accept(exception);   // the only place a failed send shows up: log it, count it, park the record
+        }
+    });
+}
+```
+
+- **Asynchronous with a callback** is what pushed 5 883 records/s from one thread in the run below. The same
+  record through `ProducerBasics.sendAndWait` (`send().get()`) waits a full round trip, ~15 ms here, every time.
+- **The callback is where failures show up.** `send()` returns long before the broker answers; a record that
+  fails for good completes its callback (and future) with the exception.
+- **Name every producer.** `ProducerBasics.config(bootstrap, clientId)` sets `client.id`, the tag on every
+  metric in the tables below.
+
+The demo builds its producer with `ProducerBasics.config(...)` and times `ProducerBasics.sendAndWait` in step 2;
+everything else in [ProducerBaselineDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerBaselineDemo.java)
+is measurement.
 
 ## Run it
 

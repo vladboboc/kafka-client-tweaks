@@ -6,17 +6,16 @@ import io.kafkatweaks.common.Table;
 import io.kafkatweaks.common.Topics;
 import io.kafkatweaks.spring.DemoSupport;
 import io.kafkatweaks.spring.TopicsConfig;
+import io.kafkatweaks.spring.parallel.recipe.BackPressure;
+import io.kafkatweaks.spring.parallel.recipe.ConcurrencyRecipe;
+import io.kafkatweaks.spring.parallel.recipe.ParallelListeners;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.boot.ApplicationRunner;
-import org.springframework.boot.kafka.autoconfigure.ConcurrentKafkaListenerContainerFactoryConfigurer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
-import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
-import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
-import org.springframework.kafka.listener.MessageListenerContainer;
 
 import java.time.Duration;
 import java.util.List;
@@ -25,7 +24,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 
 /**
- * Chapter 17: concurrency, batch listeners and back-pressure.
+ * Chapter 17: concurrency, batch listeners and back-pressure. Measures {@link ParallelListeners}, {@link ConcurrencyRecipe}
+ * and {@link BackPressure}; everything else in this file is measurement.
  * <ol>
  *   <li>the same 1 ms handler with concurrency 1, 3, 6 and 8 on a 6-partition topic</li>
  *   <li>a batch listener: what one call receives, and the cost model that makes it worth it</li>
@@ -41,30 +41,16 @@ import java.util.function.LongSupplier;
 @Profile("spring-concurrency")
 public class ConcurrencyDemo {
 
-    /**
-     * A second container factory for a container-level setting: Boot's configurer applies everything
-     * {@code spring.kafka.listener.*} says (auto-startup, poll timeout, the virtual-thread executor ...), then the
-     * factory is changed where the default one cannot be. Listeners pick it with {@code containerFactory = "..."}.
-     * (asyncAcks happens to have a Boot key, spring.kafka.listener.async-acks; deliveryAttemptHeader, pauseImmediate
-     * or micrometerTags do not, and this is how you set those.)
-     */
-    @Bean
-    ConcurrentKafkaListenerContainerFactory<Object, Object> asyncAckContainerFactory(
-            ConcurrentKafkaListenerContainerFactoryConfigurer configurer, ConsumerFactory<Object, Object> consumerFactory) {
-        var factory = new ConcurrentKafkaListenerContainerFactory<Object, Object>();
-        configurer.configure(factory, consumerFactory);
-        // Acknowledgements may arrive in any order; the container commits contiguous prefixes and pauses the
-        // consumer until every record of the poll is acknowledged. Requires ackMode MANUAL or MANUAL_IMMEDIATE.
-        factory.getContainerProperties().setAsyncAcks(true);
-        return factory;
-    }
+    /** The scaling listeners, in the order of the first table. */
+    static final List<String> SCALING = List.of("par-1", "par-3", "par-6", "par-8");
 
     @Bean
-    ApplicationRunner springConcurrency(DemoSupport support, ParallelListeners listeners, ContainerEvents events, MeterRegistry registry) {
+    ApplicationRunner springConcurrency(DemoSupport support, ParallelProbe probe, ParallelListeners listeners, BackPressure backPressure,
+                                        ContainerEvents events, MeterRegistry registry) {
         return support.demo("spring-concurrency", args -> {
             long records = args.getLong("records", 18_000);
             long workMs = args.getLong("work", 1);
-            listeners.workMs(workMs);
+            probe.workMs(workMs);
             String topic = TopicsConfig.PARALLEL;
             long total;
             try (var topics = new Topics()) {
@@ -80,10 +66,10 @@ public class ConcurrencyDemo {
             // ---- 1. scaling ----------------------------------------------------------------------------------
             var scaling = new Table("listener", "concurrency", "consumers that got partitions", "records", "start -> drained ms", "records/s", "ms per record", "timer mean ms", "threads");
             double singleMs = 0;
-            for (String id : ParallelListeners.SCALING) {
+            for (String id : SCALING) {
                 var sw = Stopwatch.start();
                 support.start(id);
-                await(() -> listeners.count(id), total, Duration.ofMinutes(3), id);
+                await(() -> probe.count(id), total, Duration.ofMinutes(3), id);
                 double ms = sw.elapsedMillis();
                 var container = (ConcurrentMessageListenerContainer<?, ?>) support.container(id);
                 int children = container.getContainers().size();
@@ -93,9 +79,9 @@ public class ConcurrencyDemo {
                 if (singleMs == 0) {
                     singleMs = ms;
                 }
-                scaling.row(id, container.getConcurrency(), active + " of " + children, listeners.count(id), "%.0f".formatted(ms),
-                        "%.0f".formatted(listeners.count(id) / ms * 1000), "%.2f".formatted(ms / listeners.count(id)), "%.3f".formatted(timerMean),
-                        listeners.threads(id).size() + (listeners.virtualThreads() ? " virtual" : " platform"));
+                scaling.row(id, container.getConcurrency(), active + " of " + children, probe.count(id), "%.0f".formatted(ms),
+                        "%.0f".formatted(probe.count(id) / ms * 1000), "%.2f".formatted(ms / probe.count(id)), "%.3f".formatted(timerMean),
+                        probe.threads(id).size() + (probe.virtualThreads() ? " virtual" : " platform"));
             }
             scaling.print("1. %d records x %d ms of work each (parkNanos) on 6 partitions; concurrency = child containers = consumers in the group".formatted(total, workMs));
             System.out.printf("   effective work per record on this machine: %.2f ms (par-1 has one consumer, so its ms/record is the handler's cost + poll overhead)%n", singleMs / total);
@@ -103,26 +89,26 @@ public class ConcurrencyDemo {
             // ---- 2. batch listener -----------------------------------------------------------------------------
             var sw = Stopwatch.start();
             support.start("par-batch");
-            await(() -> listeners.count("par-batch"), total, Duration.ofMinutes(3), "par-batch");
+            await(() -> probe.count("par-batch"), total, Duration.ofMinutes(3), "par-batch");
             double batchMs = sw.elapsedMillis();
             var batchContainer = (ConcurrentMessageListenerContainer<?, ?>) support.container("par-batch");
             double batchTimerMean = timerMeanMs(registry, "par-batch");
             support.stop("par-batch");
             var batch = new Table("listener", "concurrency (from yml)", "calls", "records/call avg", "largest call", "start -> drained ms", "records/s", "timer mean ms per call");
-            batch.row("par-batch", batchContainer.getConcurrency(), listeners.batchCalls(), "%.1f".formatted((double) listeners.count("par-batch") / listeners.batchCalls()),
-                    listeners.largestBatch(), "%.0f".formatted(batchMs), "%.0f".formatted(listeners.count("par-batch") / batchMs * 1000), "%.3f".formatted(batchTimerMean));
+            batch.row("par-batch", batchContainer.getConcurrency(), probe.batchCalls(), "%.1f".formatted((double) probe.count("par-batch") / probe.batchCalls()),
+                    probe.largestBatch(), "%.0f".formatted(batchMs), "%.0f".formatted(probe.count("par-batch") / batchMs * 1000), "%.3f".formatted(batchTimerMean));
             batch.print("2. batch=\"true\": the listener gets List<ConsumerRecord> (<= max.poll.records=500), here at 2 ms per CALL instead of %d ms per record".formatted(workMs));
 
             // ---- 3. asyncAcks ------------------------------------------------------------------------------------
             sw = Stopwatch.start();
             support.start("par-async");
-            await(() -> listeners.count("par-async"), total, Duration.ofMinutes(3), "par-async");
+            await(() -> probe.count("par-async"), total, Duration.ofMinutes(3), "par-async");
             double asyncMs = sw.elapsedMillis();
             support.stop("par-async");
             listeners.shutdownWorkers();
             var async = new Table("listener", "consumer threads", "workers", "records", "start -> drained ms", "records/s", "compare with");
-            async.row("par-async", 1, "6 virtual, one per partition", listeners.count("par-async"), "%.0f".formatted(asyncMs),
-                    "%.0f".formatted(listeners.count("par-async") / asyncMs * 1000), "par-1 (same single consumer) and par-6 (six consumers)");
+            async.row("par-async", 1, "6 virtual, one per partition", probe.count("par-async"), "%.0f".formatted(asyncMs),
+                    "%.0f".formatted(probe.count("par-async") / asyncMs * 1000), "par-1 (same single consumer) and par-6 (six consumers)");
             async.print("3. ackMode=MANUAL + asyncAcks: the poll thread hands records to per-partition workers and returns; workers acknowledge out of order");
             System.out.println("   max.partition.fetch.bytes=16K on this listener so that a poll mixes all six partitions (chapter 10's lesson: a poll");
             System.out.println("   otherwise returns one partition at a time and only one worker would be busy). The container pauses the consumer");
@@ -130,20 +116,19 @@ public class ConcurrencyDemo {
                     events.pauseResume("par-async").size());
 
             // ---- 4. pause / resume -------------------------------------------------------------------------------
-            MessageListenerContainer pausable = support.container("par-pause");
             support.start("par-pause");
             DemoSupport.sleep(400);
-            pausable.pause();
+            backPressure.pause("par-pause");   // <- the recipe under test
             long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
-            while (!pausable.isContainerPaused() && System.nanoTime() < deadline) {
+            while (!backPressure.isPaused("par-pause") && System.nanoTime() < deadline) {
                 DemoSupport.sleep(20);
             }
-            long atPause = listeners.count("par-pause");
+            long atPause = probe.count("par-pause");
             DemoSupport.sleep(2000);
-            long whilePaused = listeners.count("par-pause");
-            pausable.resume();
+            long whilePaused = probe.count("par-pause");
+            backPressure.resume("par-pause");
             DemoSupport.sleep(1500);
-            long afterResume = listeners.count("par-pause");
+            long afterResume = probe.count("par-pause");
             support.stop("par-pause");
             var pause = new Table("moment", "records processed", "what happened");
             pause.row("pause() called after 400 ms", atPause, "takes effect before the next poll(); records already fetched are still delivered");

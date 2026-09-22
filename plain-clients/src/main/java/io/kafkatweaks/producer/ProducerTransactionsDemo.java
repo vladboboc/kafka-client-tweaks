@@ -8,11 +8,11 @@ import io.kafkatweaks.common.Payloads;
 import io.kafkatweaks.common.Stopwatch;
 import io.kafkatweaks.common.Table;
 import io.kafkatweaks.common.Topics;
+import io.kafkatweaks.producer.recipe.ExactlyOnceProcessor;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
-import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -21,6 +21,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.ProducerFencedException;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -29,7 +30,8 @@ import java.util.Properties;
 import java.util.Set;
 
 /**
- * Chapter 06: transactions and exactly-once.
+ * Chapter 06: transactions and exactly-once. Measures {@link ExactlyOnceProcessor}; everything else in this file is
+ * measurement.
  * <ol>
  *   <li>atomic multi-partition writes: abort vs commit, seen through read_committed and read_uncommitted consumers</li>
  *   <li>what a commit costs: throughput vs records per transaction</li>
@@ -81,11 +83,11 @@ public final class ProducerTransactionsDemo implements Demo {
             producer.abortTransaction();
             System.out.println("sent 10 records over 3 partitions, then abortTransaction()");
 
-            producer.beginTransaction();
+            var committed = new ArrayList<ProducerRecord<String, String>>();
             for (int i = 0; i < 10; i++) {
-                producer.send(new ProducerRecord<>(OUT, "committed-" + i, "visible"));
+                committed.add(new ProducerRecord<>(OUT, "committed-" + i, "visible"));
             }
-            producer.commitTransaction();
+            ExactlyOnceProcessor.sendAtomically(producer, committed);   // <- the recipe under test
             System.out.println("sent 10 records over 3 partitions, then commitTransaction()");
         }
 
@@ -115,11 +117,11 @@ public final class ProducerTransactionsDemo implements Demo {
                 var watch = Stopwatch.start();
                 int commits = 0;
                 for (int i = 0; i < total; i += perTxn) {
-                    producer.beginTransaction();
+                    var records = new ArrayList<ProducerRecord<String, String>>(perTxn);
                     for (int j = 0; j < perTxn; j++) {
-                        producer.send(new ProducerRecord<>(OUT, null, Payloads.json(i + j, size)));
+                        records.add(new ProducerRecord<>(OUT, null, Payloads.json(i + j, size)));
                     }
-                    producer.commitTransaction();
+                    ExactlyOnceProcessor.sendAtomically(producer, records);
                     commits++;
                 }
                 table.row(perTxn, watch.rate(total), watch.rate(commits));
@@ -196,17 +198,15 @@ public final class ProducerTransactionsDemo implements Demo {
         final KafkaConsumer<String, String> consumer;
         final int crashAfter;
         final String name;
+        int processed;   // records handed to the transform so far; the transform lambda counts them
 
         Processor(Args args, String name, int crashAfter) {
             this.name = name;
             this.crashAfter = crashAfter;
-            var pp = txnProducerProps(args, name);
-            pp.put(ProducerConfig.TRANSACTIONAL_ID_CONFIG, "tweaks-txn-processor");   // the SAME id across restarts
-            this.producer = new KafkaProducer<>(pp);
-            var cp = consumerProps(args, name, "read_committed");
-            cp.put(ConsumerConfig.GROUP_ID_CONFIG, "txn-processor");
-            cp.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");   // offsets go through the transaction
-            this.consumer = new KafkaConsumer<>(cp);
+            // The SAME transactional.id across restarts: that is what lets processor-2 fence processor-1.
+            this.producer = new KafkaProducer<>(args.applyOverrides(
+                    ExactlyOnceProcessor.transactional(Env.producer("txn-" + name), "tweaks-txn-processor", Duration.ofSeconds(30))));
+            this.consumer = new KafkaConsumer<>(ExactlyOnceProcessor.readCommitted(consumerProps(args, name, "read_committed"), "txn-processor"));
         }
 
         int run() {
@@ -216,7 +216,6 @@ public final class ProducerTransactionsDemo implements Demo {
             // return records, and a loop that ignores poll() results silently skips them (their offsets are
             // then committed by the next transaction as if they had been processed). Every poll result counts.
             boolean announced = false;
-            int processed = 0;
             int idlePolls = 0;
             int txn = 0;
             long deadline = System.currentTimeMillis() + 60_000;
@@ -246,27 +245,26 @@ public final class ProducerTransactionsDemo implements Demo {
                 }
                 idlePolls = 0;
                 txn++;
-                producer.beginTransaction();
-                var offsets = new HashMap<TopicPartition, OffsetAndMetadata>();
-                for (ConsumerRecord<String, String> r : batch) {
-                    producer.send(new ProducerRecord<>(OUT, r.key(), r.value().toUpperCase()));
-                    offsets.put(new TopicPartition(r.topic(), r.partition()), new OffsetAndMetadata(r.offset() + 1));
-                    processed++;
-                    if (processed >= crashAfter) {
-                        // Simulated crash: return without commitTransaction()/abortTransaction(). Offsets were never
-                        // committed (they only travel inside the transaction), so this is exactly what a JVM crash
-                        // leaves behind. The consumer is closed cleanly only so that the group does not have to wait
-                        // session.timeout.ms (45 s) for a dead member before the successor gets partitions.
-                        // The producer object stays alive on purpose so the fencing check below can use it.
-                        System.out.printf("%s txn #%d: %s -> CRASH before commit (will be aborted)%n", name, txn, ranges(batch, r.offset()));
-                        consumer.close();
-                        return processed;
-                    }
+                try {
+                    // The recipe under test: send the transformed batch and its input offsets in one transaction.
+                    boolean committed = ExactlyOnceProcessor.processBatch(consumer, producer, batch, r -> {
+                        if (++processed >= crashAfter) {
+                            throw new SimulatedCrash(r.offset());
+                        }
+                        return new ProducerRecord<>(OUT, r.key(), r.value().toUpperCase());
+                    });
+                    System.out.printf("%s txn #%d: %s -> %s%n", name, txn, ranges(batch, Long.MAX_VALUE),
+                            committed ? "committed" : "aborted, the batch will be read again");
+                } catch (SimulatedCrash crash) {
+                    // Not a KafkaException, so processBatch neither committed nor aborted: the transaction is left open,
+                    // exactly what a JVM crash leaves behind. The offsets were never committed (they only travel inside
+                    // the transaction). The consumer is closed cleanly only so that the group does not have to wait
+                    // session.timeout.ms (45 s) for a dead member before the successor gets partitions.
+                    // The producer object stays alive on purpose so the fencing check below can use it.
+                    System.out.printf("%s txn #%d: %s -> CRASH before commit (will be aborted)%n", name, txn, ranges(batch, crash.offset));
+                    consumer.close();
+                    return processed;
                 }
-                // Offsets are committed AS PART OF the transaction: they become visible together with the output records.
-                producer.sendOffsetsToTransaction(offsets, consumer.groupMetadata());
-                producer.commitTransaction();
-                System.out.printf("%s txn #%d: %s -> committed%n", name, txn, ranges(batch, Long.MAX_VALUE));
             }
             consumer.close();
             producer.close();
@@ -305,6 +303,16 @@ public final class ProducerTransactionsDemo implements Demo {
 
     // ------------------------------------------------------------------ helpers
 
+    /** The demo's stand-in for a JVM crash: thrown from the transform, so the transaction is left open. */
+    private static final class SimulatedCrash extends RuntimeException {
+        final long offset;
+
+        SimulatedCrash(long offset) {
+            super("simulated crash at input offset " + offset, null, false, false);
+            this.offset = offset;
+        }
+    }
+
     private interface RecordVisitor {
         void visit(ConsumerRecord<String, String> record);
     }
@@ -331,10 +339,7 @@ public final class ProducerTransactionsDemo implements Demo {
     }
 
     private static Properties txnProducerProps(Args args, String clientId) {
-        var p = Env.producer("txn-" + clientId);
-        p.put(ProducerConfig.TRANSACTIONAL_ID_CONFIG, "tweaks-txn-" + clientId);
-        p.put(ProducerConfig.TRANSACTION_TIMEOUT_CONFIG, "30000");
-        return args.applyOverrides(p);
+        return args.applyOverrides(ExactlyOnceProcessor.transactional(Env.producer("txn-" + clientId), "tweaks-txn-" + clientId, Duration.ofSeconds(30)));
     }
 
     private static Properties plainProducerProps(Args args, String clientId) {

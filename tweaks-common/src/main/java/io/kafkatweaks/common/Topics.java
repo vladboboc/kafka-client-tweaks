@@ -37,6 +37,8 @@ import java.util.stream.Collectors;
 public final class Topics implements AutoCloseable {
 
     private static final Duration DELETE_WAIT = Duration.ofSeconds(30);
+    /** How long a topic that must exist may stay unknown to the broker a describe lands on (see describeExisting). */
+    private static final Duration METADATA_LAG = Duration.ofSeconds(10);
     private final Admin admin;
 
     public Topics() {
@@ -59,6 +61,8 @@ public final class Topics implements AutoCloseable {
             System.out.printf("topic %s created (%d partitions, RF=%d%s)%n", topic, partitions, replicationFactor, describeConfigs(configs));
             // createTopics() returns when the controller has accepted the topic; the brokers' metadata catches up a
             // moment later. Anything that describes or writes the topic right away would see UNKNOWN_TOPIC_OR_PARTITION.
+            // This loop only proves it for the broker that answered; describeExisting() covers a later read that
+            // lands on one still catching up.
             long deadline = System.nanoTime() + Duration.ofSeconds(15).toNanos();
             while (describe(topic).map(d -> d.partitions().stream().anyMatch(p -> p.leader() == null)).orElse(true)) {
                 if (System.nanoTime() > deadline) {
@@ -113,6 +117,10 @@ public final class Topics implements AutoCloseable {
         throw new IllegalStateException("topic " + topic + " still present " + DELETE_WAIT + " after delete");
     }
 
+    /**
+     * Empty when the broker asked does not know the topic. Right after a create that broker may just be catching up,
+     * so a caller that knows the topic exists wants {@link #describeExisting} instead.
+     */
     public Optional<TopicDescription> describe(String topic) {
         try {
             return Optional.of(admin.describeTopics(List.of(topic)).allTopicNames().get().get(topic));
@@ -127,9 +135,30 @@ public final class Topics implements AutoCloseable {
         }
     }
 
+    /**
+     * The description of a topic the caller knows exists, typically one it has just created. Every broker applies a
+     * metadata change on its own, and describeTopics() goes to whichever broker the Admin client finds least loaded, not
+     * to the one that answered last: once the client is connected to several brokers, one of them can describe a new
+     * topic with its leaders while the next one asked still replies UNKNOWN_TOPIC_OR_PARTITION (for tens of
+     * milliseconds on a busy stack; it failed chapter 20 once). So an unknown topic is asked about again before it
+     * counts as missing.
+     */
+    public TopicDescription describeExisting(String topic) {
+        long deadline = System.nanoTime() + METADATA_LAG.toNanos();
+        while (true) {
+            Optional<TopicDescription> description = describe(topic);
+            if (description.isPresent()) {
+                return description.get();
+            }
+            if (System.nanoTime() > deadline) {
+                throw new IllegalStateException("topic " + topic + " does not exist");
+            }
+            sleep(100);
+        }
+    }
+
     public int partitionCount(String topic) {
-        return describe(topic).map(d -> d.partitions().size())
-                .orElseThrow(() -> new IllegalStateException("topic " + topic + " does not exist"));
+        return describeExisting(topic).partitions().size();
     }
 
     /**
@@ -274,7 +303,7 @@ public final class Topics implements AutoCloseable {
 
     /** Prints partition → leader / replicas / ISR, the view the durability chapter reasons about. */
     public void printPartitions(String topic) {
-        TopicDescription d = describe(topic).orElseThrow(() -> new IllegalStateException("no topic " + topic));
+        TopicDescription d = describeExisting(topic);
         var table = new Table("partition", "leader", "replicas", "in-sync replicas");
         d.partitions().forEach(p -> table.row(
                 p.partition(),

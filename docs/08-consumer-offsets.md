@@ -1,6 +1,6 @@
 # 08 · Offsets and delivery guarantees
 
-**Demo:** `consumer-offsets` · [ConsumerOffsetsDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerOffsetsDemo.java)
+**Demo:** `consumer-offsets` · [ConsumerOffsetsDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerOffsetsDemo.java) · **Recipes:** [AtLeastOnceConsumer.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/AtLeastOnceConsumer.java), [Replay.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/Replay.java)
 
 ## The problem
 
@@ -20,6 +20,54 @@ knows what you committed.
 | `seek`, `seekToBeginning`, `seekToEnd`, `offsetsForTimes` | – | set the position by hand: replay, skip, time travel |
 | `isolation.level` | `read_uncommitted` | chapter 06 |
 
+## The code that matters
+
+Where the `commitSync()` sits relative to the handler, from
+[AtLeastOnceConsumer.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/AtLeastOnceConsumer.java)
+(with `enable.auto.commit=false`, `AtLeastOnceConsumer.manualCommits()`):
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/AtLeastOnceConsumer.java -->
+```java
+public int pollOnce(Duration timeout) throws Exception {
+    ConsumerRecords<K, V> batch = consumer.poll(timeout);
+    if (batch.isEmpty()) {
+        return 0;
+    }
+    if (commitPoint == CommitPoint.BEFORE_HANDLING) {
+        consumer.commitSync();   // the position is already past this batch: this commits "we will have handled these"
+    }
+    for (ConsumerRecord<K, V> record : batch) {
+        handler.handle(record);
+    }
+    if (commitPoint == CommitPoint.AFTER_HANDLING) {
+        consumer.commitSync();   // commits the position after the batch: "these are done"
+    }
+    return batch.count();
+}
+// ...
+public static <K, V> RecordHandler<K, V> skipDuplicates(Function<ConsumerRecord<K, V>, String> idOf,
+                                                        Predicate<String> alreadyHandled, RecordHandler<K, V> handler) {
+    return record -> {
+        if (!alreadyHandled.test(idOf.apply(record))) {
+            handler.handle(record);
+        }
+    };
+}
+```
+
+- **`BEFORE_HANDLING` lost 266 records**, **`AFTER_HANDLING` processed 234 twice**, and
+  **`AFTER_HANDLING` + `skipDuplicates(...)`** neither. A handler that throws commits nothing of its batch, which is
+  what makes the redelivery happen.
+- **`skipDuplicates` only works if the handler stores the id in the same transaction as its side effect**
+  (a processed-events table, an upsert): the lookup is only as durable as that write.
+- **Replay** is a few lines each in [Replay.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/Replay.java):
+  `fromTime(consumer, instant)` (`offsetsForTimes`, then seek), `lastRecords(consumer, n)` and `rewindGroup(consumer)`.
+
+The demo's `consume()` runs each strategy through `AtLeastOnceConsumer`, the crash being a handler that throws after
+record 1234, and its part 4 calls `Replay`. Everything else in
+[ConsumerOffsetsDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerOffsetsDemo.java) is
+measurement. The loop is unit-tested with `MockConsumer` (`AtLeastOnceConsumerTest`).
+
 ## Run it
 
 ```bash
@@ -37,7 +85,7 @@ Arguments: `records=3000`, `crash-at=1234`.
 | strategy                 | processed (run 1 + run 2) | distinct records | missing | duplicates (handler saw twice) |
 | commit before processing |               1234 + 1500 |             2734 |     266 |                              0 |
 | commit after processing  |               1234 + 2000 |             3000 |       0 |                            234 |
-| commit after idempotent  |               1234 + 2000 |             3000 |       0 |                              0 |
+| commit after idempotent  |               1234 + 1766 |             3000 |       0 |                              0 |
 ```
 
 **2. Auto-commit timing.** A consumer that processes 100 records per poll, ~10 polls/s, while the demo
@@ -75,9 +123,9 @@ samples `position()` and `committed()` every second:
   last commit came back in run 2. This is the default contract of Kafka consumption; everything downstream
   must tolerate it.
 - **At-least-once + an idempotent handler = effectively-once.** The same 234 redeliveries arrive, and the
-  handler recognises them. Its memory must survive the crash: a unique constraint or upsert in the database
-  you write to, a processed-ids table with the same transaction as the business write (the inbox pattern),
-  a conditional `PUT`. An in-memory set would not have helped.
+  handler recognises them: run 2 handles 1 766 records, not 2 000. Its memory must survive the crash: a unique
+  constraint or upsert in the database you write to, a processed-ids table with the same transaction as the
+  business write (the inbox pattern), a conditional `PUT`. An in-memory set would not have helped.
 - **Auto-commit is at-least-once *only* while processing is synchronous in the poll loop.** The
   committed offset trails by up to 5 s (t=0..4 above), then jumps. Hand records to another thread and keep
   polling, and the next poll commits offsets for work that has not happened: at-most-once by accident.

@@ -10,6 +10,7 @@ import io.kafkatweaks.common.Stopwatch;
 import io.kafkatweaks.common.Table;
 import io.kafkatweaks.common.Topics;
 import io.kafkatweaks.common.Seed;
+import io.kafkatweaks.consumer.recipe.FetchTuning;
 import org.apache.kafka.clients.consumer.CommitFailedException;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -26,7 +27,7 @@ import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Chapter 07: the poll loop and fetch tuning.
+ * Chapter 07: the poll loop and fetch tuning. Measures {@link FetchTuning}; everything else in this file is measurement.
  * <ol>
  *   <li>catch-up throughput under several fetch presets (records per poll, bytes per fetch, fetch requests)</li>
  *   <li>a slow handler that overruns max.poll.interval.ms, gets kicked out, and the two ways to fix it</li>
@@ -42,20 +43,17 @@ public final class ConsumerFetchDemo implements Demo {
 
     private static final String TOPIC = "tweaks.fetch";
 
-    static final Map<String, Map<String, String>> PRESETS = new LinkedHashMap<>();
+    static final Map<String, Map<String, ?>> PRESETS = new LinkedHashMap<>();
 
     static {
         PRESETS.put("defaults", Map.of());
-        PRESETS.put("max.poll.records=50", Map.of(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "50"));
-        PRESETS.put("max.poll.records=5000", Map.of(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "5000"));
-        PRESETS.put("max.partition.fetch.bytes=64K", Map.of(ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG, String.valueOf(64 * 1024)));
+        PRESETS.put("max.poll.records=50", Map.of(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 50));
+        PRESETS.put("max.poll.records=5000", Map.of(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 5000));
+        PRESETS.put("max.partition.fetch.bytes=64K", Map.of(ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG, 64 * 1024));
         // No spaces or commas in a preset name: `runs=` splits on commas and -Dexec.args splits on whitespace,
         // so a name containing either could never be selected.
-        PRESETS.put("fetch.min.bytes=1M+wait=500", Map.of(ConsumerConfig.FETCH_MIN_BYTES_CONFIG, String.valueOf(1024 * 1024),
-                ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG, "500"));
-        PRESETS.put("big-everything", Map.of(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "5000",
-                ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG, String.valueOf(4 * 1024 * 1024),
-                ConsumerConfig.FETCH_MIN_BYTES_CONFIG, String.valueOf(1024 * 1024), ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG, "500"));
+        PRESETS.put("fetch.min.bytes=1M+wait=500", FetchTuning.fewerFetches(1024 * 1024, Duration.ofMillis(500)));
+        PRESETS.put("big-everything", FetchTuning.catchUp());   // <- the recipe under test
     }
 
     @Override
@@ -82,7 +80,7 @@ public final class ConsumerFetchDemo implements Demo {
         catchUp(args, "warm-up", Map.of(), total);   // JIT warm-up, discarded: the first measured preset must not pay for it
         var table = new Table("preset", "elapsed ms", "records/s", "MB/s", "polls", "records/poll", "fetch-size-avg", "records/fetch", "fetch-latency-avg", "fetch-rate");
         for (String name : runs) {
-            Map<String, String> preset = PRESETS.get(name);
+            Map<String, ?> preset = PRESETS.get(name);
             if (preset == null) {
                 System.err.println("unknown preset '" + name + "', known: " + PRESETS.keySet());
                 continue;
@@ -102,7 +100,7 @@ public final class ConsumerFetchDemo implements Demo {
 
     // ------------------------------------------------------------------ 1. catch-up
 
-    private static Object[] catchUp(Args args, String label, Map<String, String> overrides, long total) {
+    private static Object[] catchUp(Args args, String label, Map<String, ?> overrides, long total) {
         Properties props = Env.consumer("fetch-" + label.replaceAll("[^a-zA-Z0-9]", "") + "-" + System.nanoTime(), "fetch-" + label);
         props.putAll(overrides);
         args.applyOverrides(props);
@@ -160,8 +158,7 @@ public final class ConsumerFetchDemo implements Demo {
 
     private static Object[] slowRun(Args args, int maxPollRecords, int maxPollIntervalMs, int msPerRecord) {
         Properties props = Env.consumer("fetch-slow-" + System.nanoTime(), "fetch-slow-" + maxPollRecords);
-        props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, String.valueOf(maxPollRecords));
-        props.put(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, String.valueOf(maxPollIntervalMs));
+        props.putAll(FetchTuning.pollBudget(maxPollRecords, Duration.ofMillis(maxPollIntervalMs)));   // <- the recipe under test
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
         args.applyOverrides(props);
         String outcome;
@@ -239,8 +236,7 @@ public final class ConsumerFetchDemo implements Demo {
 
     private static Object[] tailRun(Args args, int fetchMinBytes, int fetchMaxWaitMs, int seconds) {
         Properties props = Env.consumer("fetch-tail-" + System.nanoTime(), "fetch-tail-" + fetchMinBytes);
-        props.put(ConsumerConfig.FETCH_MIN_BYTES_CONFIG, String.valueOf(fetchMinBytes));
-        props.put(ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG, String.valueOf(fetchMaxWaitMs));
+        props.putAll(FetchTuning.fewerFetches(fetchMinBytes, Duration.ofMillis(fetchMaxWaitMs)));   // <- the recipe under test
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
         args.applyOverrides(props);
         long records = 0, polls = 0, nonEmpty = 0;

@@ -1,6 +1,6 @@
 # 18 · Error handling, retries, dead letters and `@RetryableTopic`
 
-**Demo:** `spring-error-handling` · [ErrorHandlingDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/ErrorHandlingDemo.java) · [ErrorListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/ErrorListeners.java) · [application-spring-error-handling.yml](../spring-boot-kafka/src/main/resources/application-spring-error-handling.yml)
+**Demo:** `spring-error-handling` · [ErrorHandlingDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/ErrorHandlingDemo.java) · [application-spring-error-handling.yml](../spring-boot-kafka/src/main/resources/application-spring-error-handling.yml) · **Recipes:** [ErrorHandlingRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/recipe/ErrorHandlingRecipe.java), [OrderListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/recipe/OrderListeners.java), [DltPublisher.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/recipe/DltPublisher.java)
 
 ## The problem
 
@@ -44,6 +44,70 @@ flowchart LR
 | `@DltHandler` | log only | the method that receives what exhausted its attempts; the exception travels in `kafka_exception-*` headers |
 | `spring.kafka.retry.topic.enabled` + `attempts`, `backoff.*` | off | Boot's global alternative: the same for *every* listener, no annotation |
 | limits | | `@RetryableTopic` does not combine with batch listeners or with container transactions (chapter 19) |
+
+## The code that matters
+
+Blocking retries are a container factory with an error handler, from
+[ErrorHandlingRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/recipe/ErrorHandlingRecipe.java):
+
+<!-- recipe: spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/recipe/ErrorHandlingRecipe.java -->
+```java
+var factory = new ConcurrentKafkaListenerContainerFactory<Object, Object>();
+configurer.configure(factory, consumerFactory);
+var backOff = new ExponentialBackOffWithMaxRetries(3);
+backOff.setInitialInterval(200);
+backOff.setMultiplier(2.0);
+backOff.setMaxInterval(2000);
+// DeadLetterPublishingRecoverer defaults: destination "<topic>-dlt", same partition as the original record.
+var handler = new DefaultErrorHandler(new DeadLetterPublishingRecoverer(dlt.template()), backOff);
+handler.addNotRetryableExceptions(IllegalArgumentException.class);
+factory.setCommonErrorHandler(handler);
+```
+
+non-blocking retries are an annotation, from [OrderListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/recipe/OrderListeners.java)
+(`orders` is your service; in the demo it fails on cue and records every attempt):
+
+<!-- recipe: spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/recipe/OrderListeners.java -->
+```java
+@KafkaListener(id = "errors-blocking", groupId = "spring-errors-blocking", clientIdPrefix = "errors-blocking",
+        topics = TopicsConfig.ERRORS, containerFactory = "blockingRetryFactory")
+public void blocking(ConsumerRecord<String, Order> record) {
+    orders.handle(record);
+}
+
+// attempts = 1 delivery + 3 retries; numPartitions: the retry topics default to ONE partition, set it
+@RetryableTopic(attempts = "4", backOff = @BackOff(delay = 1000, multiplier = 2.0), include = TransientFailure.class,
+        numPartitions = "3", autoCreateTopics = "true")
+@KafkaListener(id = "errors-retryable", groupId = "spring-errors-retryable", clientIdPrefix = "errors-retryable", topics = TopicsConfig.RETRYABLE)
+public void retryable(ConsumerRecord<String, Order> record) {
+    orders.handle(record);
+}
+
+/** What exhausted its attempts arrives here; the exception travels in the {@code kafka_exception-*} headers. */
+@DltHandler
+public void parked(ConsumerRecord<String, Order> record) {
+    orders.parked(record);
+}
+```
+
+and the poison-pill half is two lines of yml (`value-deserializer: ErrorHandlingDeserializer` plus its delegate),
+[application-spring-error-handling.yml](../spring-boot-kafka/src/main/resources/application-spring-error-handling.yml).
+
+- **Blocking**: `flaky9-6` was tried at 1016, 1520, 2344 and 3155 ms and dead-lettered with its exception in the
+  `kafka_dlt-*` headers; `fatal-4` (`IllegalArgumentException`, not retryable) went to the DLT after one attempt.
+  The partition waited meanwhile: an innocent record took 3.4 s.
+- **Non-blocking**: the same failure moved through `-retry-1000`, `-retry-2000`, `-retry-4000` and `-dlt` while
+  the partition moved on; the innocent record took 527 ms. Ordering per key is the price.
+- **The DLT template** ([DltPublisher.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/recipe/DltPublisher.java))
+  needs a `DelegatingByTypeSerializer`: a poison pill reaches the recoverer as the original `byte[]`, a failed
+  record as the deserialized object.
+- **The handler is not a bean on purpose**: Boot would wire a `CommonErrorHandler` bean into the default factory
+  and the `@RetryableTopic` listener must keep its own.
+
+The demo produces scripted keys and reads the DLT back; everything else in
+[ErrorHandlingDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/ErrorHandlingDemo.java) and
+[ScriptedOrderHandler.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/ScriptedOrderHandler.java)
+is measurement.
 
 ## Run it
 

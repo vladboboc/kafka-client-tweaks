@@ -1,8 +1,10 @@
-package io.kafkatweaks.spring.serdes;
+package io.kafkatweaks.spring.serdes.recipe;
 
 import io.confluent.kafka.serializers.KafkaAvroDeserializer;
 import io.confluent.kafka.serializers.KafkaAvroDeserializerConfig;
+import io.confluent.kafka.serializers.KafkaAvroSerializer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.springframework.boot.kafka.autoconfigure.ConcurrentKafkaListenerContainerFactoryConfigurer;
 import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
@@ -11,16 +13,17 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.support.converter.JacksonJsonMessageConverter;
 
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Chapter 21: the application's default serialization is JSON, entirely from application-spring-serdes.yml. The two
- * other ways to get a typed value into a listener need their own consumer factory, i.e. their own container factory:
- * the same {@code spring.kafka.consumer.*} properties with the value deserializer swapped, and Boot's configurer so
- * that {@code spring.kafka.listener.*} (auto-startup, poll timeout ...) still applies.
+ * Chapter 21 · The application's default serialization is JSON, entirely from application-spring-serdes.yml. The other
+ * ways to get a typed value in or out need their own factory: the same {@code spring.kafka.*} properties with the
+ * (de)serializer swapped, and for consumers Boot's configurer, so that {@code spring.kafka.listener.*} (auto-startup,
+ * poll timeout ...) still applies. Listeners pick a factory with {@code containerFactory = "..."}.
  */
 @Configuration(proxyBeanMethods = false)
 @Profile("spring-serdes")
@@ -63,5 +66,20 @@ public class SerdesConfig {
         var factory = new ConcurrentKafkaListenerContainerFactory<Object, Object>();
         configurer.configure(factory, new DefaultKafkaConsumerFactory<>(configs));
         return factory;
+    }
+
+    /**
+     * Confluent Avro out: a producer factory from the same {@code spring.kafka.producer.*} with the value serializer
+     * swapped ({@code schema.registry.url} is already in the map). Not a bean: a second {@code ProducerFactory} bean would
+     * switch Boot's auto-configured one off. Wrap it in {@code new KafkaTemplate<>(factory)} and {@code destroy()} the
+     * factory when done. An Avro-only application would instead set the serializers on the default factories
+     * (commented at the end of application-spring-serdes.yml).
+     */
+    public static DefaultKafkaProducerFactory<String, Object> avroProducerFactory(KafkaProperties properties, String clientId) {
+        Map<String, Object> configs = new HashMap<>(properties.buildProducerProperties());
+        configs.keySet().removeIf(k -> k.startsWith("spring.json."));
+        configs.put(ProducerConfig.CLIENT_ID_CONFIG, clientId);
+        configs.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class);
+        return new DefaultKafkaProducerFactory<>(configs);
     }
 }

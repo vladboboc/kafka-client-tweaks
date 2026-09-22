@@ -8,9 +8,10 @@ import io.kafkatweaks.common.MetricsReport;
 import io.kafkatweaks.common.Table;
 import io.kafkatweaks.common.Topics;
 import io.kafkatweaks.common.Seed;
+import io.kafkatweaks.consumer.recipe.CommitOnRevoke;
+import io.kafkatweaks.consumer.recipe.GroupProtocols;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
-import org.apache.kafka.clients.consumer.CooperativeStickyAssignor;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.RangeAssignor;
 import org.apache.kafka.common.TopicPartition;
@@ -29,7 +30,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 /**
- * Chapter 09: how partitions move between consumers, under each protocol.
+ * Chapter 09: how partitions move between consumers, under each protocol. Measures {@link GroupProtocols} (and wraps
+ * every member's listener in {@link CommitOnRevoke}); everything else in this file is measurement.
  * The same choreography runs for every scenario: A joins, B joins, C joins, B leaves (and, for static
  * membership, comes back). Every revoke/assign callback is stamped on a timeline so the difference between
  * "stop the world" and incremental rebalancing is visible.
@@ -42,22 +44,21 @@ public final class ConsumerRebalanceDemo implements Demo {
 
     private static final String TOPIC = "tweaks.rebalance";
 
-    record Scenario(String key, String title, Map<String, String> config, boolean staticMembers) {
+    record Scenario(String key, String title, Map<String, ?> config, boolean staticMembers) {
     }
 
     static final List<Scenario> SCENARIOS = List.of(
             new Scenario("consumer-uniform", "group.protocol=consumer (KIP-848), server-side assignor uniform (default)",
-                    Map.of(ConsumerConfig.GROUP_PROTOCOL_CONFIG, "consumer"), false),
+                    GroupProtocols.consumerProtocol(), false),
             new Scenario("consumer-range", "group.protocol=consumer, group.remote.assignor=range",
-                    Map.of(ConsumerConfig.GROUP_PROTOCOL_CONFIG, "consumer", ConsumerConfig.GROUP_REMOTE_ASSIGNOR_CONFIG, "range"), false),
+                    GroupProtocols.consumerProtocol("range"), false),
             new Scenario("classic-range", "group.protocol=classic (deprecated), RangeAssignor: EAGER, stop-the-world",
                     Map.of(ConsumerConfig.GROUP_PROTOCOL_CONFIG, "classic",
                             ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, RangeAssignor.class.getName()), false),
             new Scenario("classic-cooperative", "group.protocol=classic, CooperativeStickyAssignor: incremental",
-                    Map.of(ConsumerConfig.GROUP_PROTOCOL_CONFIG, "classic",
-                            ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, CooperativeStickyAssignor.class.getName()), false),
+                    GroupProtocols.classicCooperative(), false),
             new Scenario("consumer-static", "group.protocol=consumer + group.instance.id (static membership): B restarts without a rebalance",
-                    Map.of(ConsumerConfig.GROUP_PROTOCOL_CONFIG, "consumer"), true));
+                    GroupProtocols.consumerProtocol(), true));
 
     @Override
     public void run(Args args) throws Exception {
@@ -174,7 +175,7 @@ public final class ConsumerRebalanceDemo implements Demo {
             Properties props = Env.consumer(group, "member-" + name);
             props.putAll(s.config());
             if (s.staticMembers()) {
-                props.put(ConsumerConfig.GROUP_INSTANCE_ID_CONFIG, "instance-" + name);
+                props.putAll(GroupProtocols.staticMember("instance-" + name));
             }
             props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
             args.applyOverrides(props);
@@ -184,7 +185,9 @@ public final class ConsumerRebalanceDemo implements Demo {
         void start() {
             thread = Thread.ofPlatform().name("consumer-" + name).start(() -> {
                 try {
-                    consumer.subscribe(List.of(TOPIC), new ConsumerRebalanceListener() {
+                    // CommitOnRevoke is the listener to copy; the timeline listener inside it only records the callbacks.
+                    // These members never mark a record done, so it has nothing to commit and the timings stay honest.
+                    consumer.subscribe(List.of(TOPIC), new CommitOnRevoke(consumer, new ConsumerRebalanceListener() {
                         @Override
                         public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
                             if (!partitions.isEmpty()) {
@@ -206,7 +209,7 @@ public final class ConsumerRebalanceDemo implements Demo {
                         private Set<Integer> snapshot() {
                             return consumer.assignment().stream().map(TopicPartition::partition).collect(Collectors.toCollection(TreeSet::new));
                         }
-                    });
+                    }));
                     while (running.get()) {
                         consumer.poll(Duration.ofMillis(200));
                         Set<Integer> now = consumer.assignment().stream().map(TopicPartition::partition).collect(Collectors.toCollection(TreeSet::new));

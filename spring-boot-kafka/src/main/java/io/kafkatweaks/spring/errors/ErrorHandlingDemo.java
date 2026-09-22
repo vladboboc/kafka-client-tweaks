@@ -6,6 +6,8 @@ import io.kafkatweaks.common.Table;
 import io.kafkatweaks.common.Topics;
 import io.kafkatweaks.spring.DemoSupport;
 import io.kafkatweaks.spring.TopicsConfig;
+import io.kafkatweaks.spring.errors.recipe.ErrorHandlingRecipe;
+import io.kafkatweaks.spring.errors.recipe.OrderListeners;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -15,17 +17,11 @@ import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.springframework.boot.ApplicationRunner;
-import org.springframework.boot.kafka.autoconfigure.ConcurrentKafkaListenerContainerFactoryConfigurer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
-import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
-import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
-import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
-import org.springframework.kafka.listener.DefaultErrorHandler;
-import org.springframework.kafka.support.ExponentialBackOffWithMaxRetries;
 import org.springframework.kafka.support.KafkaHeaders;
 
 import java.nio.charset.StandardCharsets;
@@ -38,7 +34,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.IntSupplier;
 
 /**
- * Chapter 18: what happens when the listener throws.
+ * Chapter 18: what happens when the listener throws. Measures {@link ErrorHandlingRecipe} and {@link OrderListeners}
+ * (with {@link ScriptedOrderHandler} as the service behind them); everything else in this file is measurement.
  * <ol>
  *   <li>blocking retries: {@code DefaultErrorHandler} with an exponential back-off, non-retryable exceptions,
  *       a poison pill caught by {@code ErrorHandlingDeserializer}, everything unrecoverable published to
@@ -52,32 +49,9 @@ import java.util.function.IntSupplier;
 @Profile("spring-error-handling")
 public class ErrorHandlingDemo {
 
-    /**
-     * The default factory plus an error handler of our own. Boot's configurer applies spring.kafka.listener.*;
-     * then: retry 3 times with 200 / 400 / 800 ms in between, never retry IllegalArgumentException, and hand what
-     * is left to the dead-letter publisher. Boot would also wire a CommonErrorHandler BEAN into the default
-     * factory, but this chapter wants the retryable listener to keep the retry-topic infrastructure's own handler.
-     */
-    @Bean
-    ConcurrentKafkaListenerContainerFactory<Object, Object> blockingRetryFactory(
-            ConcurrentKafkaListenerContainerFactoryConfigurer configurer, ConsumerFactory<Object, Object> consumerFactory, DltPublisher dlt) {
-        var factory = new ConcurrentKafkaListenerContainerFactory<Object, Object>();
-        configurer.configure(factory, consumerFactory);
-        var backOff = new ExponentialBackOffWithMaxRetries(3);
-        backOff.setInitialInterval(200);
-        backOff.setMultiplier(2.0);
-        backOff.setMaxInterval(2000);
-        // DeadLetterPublishingRecoverer defaults: destination "<topic>-dlt", same partition as the original record.
-        var handler = new DefaultErrorHandler(new DeadLetterPublishingRecoverer(dlt.template()), backOff);
-        handler.addNotRetryableExceptions(IllegalArgumentException.class);
-        factory.setCommonErrorHandler(handler);
-        factory.getContainerProperties().setDeliveryAttemptHeader(true);   // KafkaHeaders.DELIVERY_ATTEMPT on every delivery
-        return factory;
-    }
-
     @Bean
     ApplicationRunner springErrorHandling(DemoSupport support, KafkaTemplate<String, Object> template,
-                                          ProducerFactory<String, Object> producerFactory, ErrorListeners listeners) {
+                                          ProducerFactory<String, Object> producerFactory, ScriptedOrderHandler handler) {
         return support.demo("spring-error-handling", args -> {
             try (var topics = new Topics()) {
                 topics.recreate(TopicsConfig.ERRORS, 3);
@@ -86,7 +60,7 @@ public class ErrorHandlingDemo {
                 topics.deleteGroup("spring-errors-blocking");
                 topics.deleteGroup("spring-errors-retryable");
             }
-            listeners.markStart();
+            handler.markStart();
 
             // ---- 1. blocking retries + DLT ---------------------------------------------------------------------
             List<String> keys = List.of("ok-1", "ok-2", "flaky2-3", "fatal-4", "ok-5", "flaky9-6", "ok-7");
@@ -106,12 +80,12 @@ public class ErrorHandlingDemo {
 
             support.start("errors-blocking");
             // ok x4 = 4 calls, flaky2 = 3 calls, fatal = 1 call, flaky9 = 4 calls (3 retries); the poison pill never reaches the listener.
-            await(() -> listeners.blocking().size(), 12, Duration.ofSeconds(30), "blocking listener calls");
+            await(() -> handler.blocking().size(), 12, Duration.ofSeconds(30), "blocking listener calls");
             List<ConsumerRecord<String, byte[]>> dead = readDlt(3, Duration.ofSeconds(20));
             support.stop("errors-blocking");
 
             var timeline = new Table("t ms", "partition", "key", "attempt", "kafka_deliveryAttempt header", "ms since send", "listener");
-            listeners.blocking().stream().sorted(Comparator.comparingLong(ErrorListeners.Attempt::tMs)).forEach(a ->
+            handler.blocking().stream().sorted(Comparator.comparingLong(ScriptedOrderHandler.Attempt::tMs)).forEach(a ->
                     timeline.row(a.tMs(), a.partition(), a.key() + "  (" + FailureScript.describe(a.key()) + ")", a.attempt(), a.springAttempt(), a.sinceSendMs(), a.outcome()));
             timeline.print("1. blocking: DefaultErrorHandler(ExponentialBackOffWithMaxRetries(3): 200, 400, 800 ms), IllegalArgumentException not retryable");
 
@@ -133,25 +107,25 @@ public class ErrorHandlingDemo {
             }
             System.out.printf("%nsent to spring.retryable: %s; containers started: %s%n", retryKeys, retryIds);
             // ok x2 = 2, flaky2 = 3, flaky9 = 4 attempts + 1 DLT call = 10 entries
-            await(() -> listeners.retryable().size(), 10, Duration.ofSeconds(40), "retryable listener calls");
+            await(() -> handler.retryable().size(), 10, Duration.ofSeconds(40), "retryable listener calls");
             support.stop(retryIds.toArray(String[]::new));
 
             var retries = new Table("t ms", "topic", "partition", "key", "attempt", "retry_topic-attempts header", "ms since original send", "listener");
-            listeners.retryable().stream().sorted(Comparator.comparingLong(ErrorListeners.Attempt::tMs)).forEach(a ->
+            handler.retryable().stream().sorted(Comparator.comparingLong(ScriptedOrderHandler.Attempt::tMs)).forEach(a ->
                     retries.row(a.tMs(), (a.topic().equals(TopicsConfig.RETRYABLE) ? "main" : a.topic().substring(TopicsConfig.RETRYABLE.length())), a.partition(), a.key() + "  (" + FailureScript.describe(a.key()) + ")",
                             a.attempt(), a.springAttempt(), a.sinceSendMs(), a.outcome()));
             retries.print("2. @RetryableTopic(attempts=4, backOff=@BackOff(delay=1000, multiplier=2)): retry topics -retry-1000, -retry-2000, -retry-4000, then -dlt");
 
             // ---- 3. head-of-line blocking --------------------------------------------------------------------
             var hol = new Table("strategy", "slowest 'ok' record (ms from send to processing)", "why");
-            hol.row("blocking (part 1)", maxOkDelay(listeners.blocking()), "the partition waits while flaky9-6 is retried 3 times with back-off");
-            hol.row("non-blocking (part 2)", maxOkDelay(listeners.retryable()), "the failed record leaves the partition; ok records are processed at once");
+            hol.row("blocking (part 1)", maxOkDelay(handler.blocking()), "the partition waits while flaky9-6 is retried 3 times with back-off");
+            hol.row("non-blocking (part 2)", maxOkDelay(handler.retryable()), "the failed record leaves the partition; ok records are processed at once");
             hol.print("3. what the innocent records paid");
         });
     }
 
-    private static long maxOkDelay(List<ErrorListeners.Attempt> attempts) {
-        return attempts.stream().filter(a -> a.key().startsWith("ok-")).mapToLong(ErrorListeners.Attempt::sinceSendMs).max().orElse(0);
+    private static long maxOkDelay(List<ScriptedOrderHandler.Attempt> attempts) {
+        return attempts.stream().filter(a -> a.key().startsWith("ok-")).mapToLong(ScriptedOrderHandler.Attempt::sinceSendMs).max().orElse(0);
     }
 
     /**

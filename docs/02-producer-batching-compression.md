@@ -1,6 +1,6 @@
 # 02 · Throughput: batching, compression and the accumulator
 
-**Demo:** `producer-batching` · [ProducerBatchingDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerBatchingDemo.java)
+**Demo:** `producer-batching` · [ProducerBatchingDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerBatchingDemo.java) · **Recipe:** [ThroughputProducer.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ThroughputProducer.java)
 
 ## The problem
 
@@ -24,6 +24,45 @@ record smaller on the wire.
 | `buffer.memory` | 32 MB | total accumulator; when full, `send()` blocks | more memory = more buffering, **not** more throughput |
 | `max.block.ms` | 60000 | how long `send()` may block for buffer space or metadata before throwing | |
 | `max.request.size` | 1 MB | hard cap on one request (also caps a single record) | broker's `message.max.bytes` must agree |
+
+## The code that matters
+
+Three settings, from [ThroughputProducer.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ThroughputProducer.java);
+`props.putAll(ThroughputProducer.highThroughput())` before `new KafkaProducer<>(props)` is the whole change:
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ThroughputProducer.java -->
+```java
+public static Map<String, Object> highThroughput() {
+    return batching(100, 256 * 1024, "zstd");
+}
+
+public static Map<String, Object> batching(int lingerMs, int batchSizeBytes, String compressionType) {
+    return Map.of(
+            // How long a batch that is not full waits for more records. Default 5 ms (0 before Kafka 4.0).
+            // It only matters at LOW traffic: under a firehose batches fill up long before it expires.
+            ProducerConfig.LINGER_MS_CONFIG, lingerMs,
+            // Max bytes of UNCOMPRESSED records per partition batch. Default 16 KB. This is the lever under load:
+            // 16 KB -> 64 KB more than doubled throughput. It is per partition: buffer.memory must hold
+            // partitions x batch.size.
+            ProducerConfig.BATCH_SIZE_CONFIG, batchSizeBytes,
+            // none | lz4 | snappy | zstd | gzip. Default none. Compresses whole batches, so bigger batches compress
+            // better: JSON went out at 6% of its size. zstd has the best ratio at a CPU cost close to lz4. Costs CPU
+            // on the producer and on every consumer, nothing on the broker (it stores the batch as received).
+            ProducerConfig.COMPRESSION_TYPE_CONFIG, compressionType);
+}
+```
+
+- **`batch.size` moves the numbers, `linger.ms` alone does not**: rows 1–3 below are flat, 16 KB → 64 KB more than
+  doubles throughput (7.6K → 17.1K records/s).
+- **`zstd` is the big win for JSON**: `compression-rate-avg` 0.06, 35.6K records/s at the same batching.
+- **`highThroughput()`** (100 ms / 256 KB / zstd) is the last row: 162.8K records/s, 7 500 records per request.
+- **Back-pressure** is `ThroughputProducer.bounded(bufferMemory, maxBlockMs)` plus a callback that counts
+  failures (`ThroughputProducer.FailureCounter`): a full buffer fails the record's future and callback, `send()`
+  does not throw.
+
+The demo's `PRESETS` map in [ProducerBatchingDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerBatchingDemo.java)
+builds the codec rows and the last row from the recipe; the first rows change one knob at a time to show which one
+matters. Everything else in that file is measurement.
 
 ## Run it
 
@@ -68,7 +107,8 @@ and the metrics that explain it:
 
 Then the back-pressure table: the same bounded workload with a 32 MB buffer (everything sent,
 `bufferpool-wait-ratio` ≈ 0) and with a 1 MB buffer plus `max.block.ms=20`, where the wait ratio climbs and
-records start being **rejected**. Note how that failure arrives: `send()` does not throw. When `max.block.ms`
+records start being **rejected** (right at the edge on this stack: 0, 1 and 4 of 60 000 in three runs; run it
+twice before concluding nothing happens). Note how that failure arrives: `send()` does not throw. When `max.block.ms`
 expires the record's future is completed with a `BufferExhaustedException` (a `TimeoutException`) and the
 callback is invoked with it, so the `outcome` column here comes from counting callback errors. A producer that
 passes no callback and never looks at the returned future loses those records without any sign of it.

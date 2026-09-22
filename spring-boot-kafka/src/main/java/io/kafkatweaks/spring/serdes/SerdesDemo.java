@@ -3,7 +3,6 @@ package io.kafkatweaks.spring.serdes;
 import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.client.SchemaMetadata;
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
-import io.confluent.kafka.serializers.KafkaAvroSerializer;
 import io.kafkatweaks.avro.AvroTrust;
 import io.kafkatweaks.common.Env;
 import io.kafkatweaks.common.Order;
@@ -11,10 +10,11 @@ import io.kafkatweaks.common.Table;
 import io.kafkatweaks.common.Topics;
 import io.kafkatweaks.spring.DemoSupport;
 import io.kafkatweaks.spring.TopicsConfig;
+import io.kafkatweaks.spring.serdes.recipe.SerdesConfig;
+import io.kafkatweaks.spring.serdes.recipe.SerdesListeners;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
-import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
@@ -23,7 +23,6 @@ import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
-import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 
@@ -31,15 +30,14 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 
 /**
- * Chapter 21: chapter 13's serialization questions, answered with Spring's serializers and properties.
+ * Chapter 21: chapter 13's serialization questions, answered with Spring's serializers and properties. Measures
+ * {@link SerdesConfig} and {@link SerdesListeners}; everything else in this file is measurement.
  * <ol>
  *   <li>JSON out with {@code JacksonJsonSerializer}: what the {@code __TypeId__} header carries</li>
  *   <li>JSON in, four ways: header + type mapping, ignore the header, remap the header, or convert in the listener adapter</li>
@@ -58,7 +56,7 @@ public class SerdesDemo {
     }
 
     @Bean
-    ApplicationRunner springSerdes(DemoSupport support, SerdesListeners listeners, KafkaTemplate<String, Object> template, KafkaProperties properties) {
+    ApplicationRunner springSerdes(DemoSupport support, SerdesProbe probe, KafkaTemplate<String, Object> template, KafkaProperties properties) {
         return support.demo("spring-serdes", args -> {
             int records = args.getInt("records", 1000);
             String avroSubject = TopicsConfig.AVRO + "-value";
@@ -96,22 +94,18 @@ public class SerdesDemo {
             List<String> jsonListeners = List.of("serdes-json", "serdes-view", "serdes-mapped", "serdes-converter");
             support.start(jsonListeners.toArray(String[]::new));
             for (String id : jsonListeners) {
-                await(() -> listeners.received(id).count(), records, Duration.ofSeconds(60), id);
+                await(() -> probe.received(id).count(), records, Duration.ofSeconds(60), id);
             }
             support.stop(jsonListeners.toArray(String[]::new));
             var in = new Table("listener", "how the value type is decided", "value class in the listener", "__TypeId__ header", "first value");
-            row(in, listeners, "serdes-json", "JacksonJsonDeserializer: header token -> spring.json.type.mapping (yml)");
-            row(in, listeners, "serdes-view", "spring.json.use.type.headers=false + value.default.type (per-listener properties)");
-            row(in, listeners, "serdes-mapped", "spring.json.type.mapping=order:OrderView (per-listener properties)");
-            row(in, listeners, "serdes-converter", "StringDeserializer + JacksonJsonMessageConverter: the method parameter's type");
+            row(in, probe, "serdes-json", "JacksonJsonDeserializer: header token -> spring.json.type.mapping (yml)");
+            row(in, probe, "serdes-view", "spring.json.use.type.headers=false + value.default.type (per-listener properties)");
+            row(in, probe, "serdes-mapped", "spring.json.type.mapping=order:OrderView (per-listener properties)");
+            row(in, probe, "serdes-converter", "StringDeserializer + JacksonJsonMessageConverter: the method parameter's type");
             in.print("2. the same %d records read by four listeners".formatted(records));
 
             // ---- 3. Avro out: a second producer factory, failure first --------------------------------------------------
-            Map<String, Object> avroProducerConfigs = new HashMap<>(properties.buildProducerProperties());
-            avroProducerConfigs.keySet().removeIf(k -> k.startsWith("spring.json."));
-            avroProducerConfigs.put(ProducerConfig.CLIENT_ID_CONFIG, "spring-serdes-avro");
-            avroProducerConfigs.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class);   // schema.registry.url is already in the map
-            var avroFactory = new DefaultKafkaProducerFactory<String, Object>(avroProducerConfigs);
+            var avroFactory = SerdesConfig.avroProducerFactory(properties, "spring-serdes-avro");   // <- the recipe under test
             var avroTemplate = new KafkaTemplate<>(avroFactory);
             System.out.printf("%n3. Avro: KafkaTemplate over a DefaultKafkaProducerFactory built from spring.kafka.producer.* with value.serializer=KafkaAvroSerializer%n");
             try {
@@ -142,10 +136,10 @@ public class SerdesDemo {
 
             // ---- 4. Avro in ------------------------------------------------------------------------------------------------------
             support.start("serdes-avro");
-            await(() -> listeners.received("serdes-avro").count(), records, Duration.ofSeconds(60), "serdes-avro");
+            await(() -> probe.received("serdes-avro").count(), records, Duration.ofSeconds(60), "serdes-avro");
             support.stop("serdes-avro");
             var avroIn = new Table("listener", "how the value type is decided", "value class in the listener", "__TypeId__ header", "first value");
-            row(avroIn, listeners, "serdes-avro", "KafkaAvroDeserializer + specific.avro.reader=true: schema id -> registry -> generated class");
+            row(avroIn, probe, "serdes-avro", "KafkaAvroDeserializer + specific.avro.reader=true: schema id -> registry -> generated class");
             avroIn.print("4. avroContainerFactory: a DefaultKafkaConsumerFactory with the Confluent deserializer, spring.kafka.listener.* still applied by Boot's configurer");
 
             new Table("format", "value bytes/record", "header bytes/record", "what is on the wire")
@@ -159,8 +153,8 @@ public class SerdesDemo {
         });
     }
 
-    private static void row(Table table, SerdesListeners listeners, String id, String how) {
-        SerdesListeners.Received r = listeners.received(id);
+    private static void row(Table table, SerdesProbe probe, String id, String how) {
+        SerdesProbe.Received r = probe.received(id);
         table.row(id, how, r.valueClass(), r.typeIdHeader(), r.sample());
     }
 

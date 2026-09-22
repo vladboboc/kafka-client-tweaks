@@ -1,6 +1,6 @@
 # 04 · Partitioning and keys
 
-**Demo:** `producer-partitioning` · [ProducerPartitioningDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerPartitioningDemo.java)
+**Demo:** `producer-partitioning` · [ProducerPartitioningDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerPartitioningDemo.java) · **Recipes:** [KeyPartitioning.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/KeyPartitioning.java), [TenantPartitioner.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/TenantPartitioner.java)
 
 ## The problem
 
@@ -27,6 +27,54 @@ flowchart TD
 | `partitioner.ignore.keys` | `false` | `true` = treat every record as key-less for partitioning (sticky). Ordering per key is gone |
 | `partitioner.adaptive.partitioning.enable` | `true` | for key-less records, weight partitions by how fast their leader accepts batches |
 | `partitioner.availability.timeout.ms` | 0 (off) | stop sending key-less records to a partition that has not made progress for this long |
+
+## The code that matters
+
+The real lever is the **key**, not a setting: same key, same partition, in order. The settings in
+[KeyPartitioning.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/KeyPartitioning.java) are for
+the cases where the default is not what you want:
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/producer/recipe/KeyPartitioning.java -->
+```java
+public static Map<String, Object> roundRobin() {
+    return Map.of(ProducerConfig.PARTITIONER_CLASS_CONFIG, RoundRobinPartitioner.class.getName());
+}
+// ...
+public static Map<String, Object> ignoreKeys() {
+    return Map.of(ProducerConfig.PARTITIONER_IGNORE_KEYS_CONFIG, true);   // default false
+}
+// ...
+public static Map<String, Object> partitioner(Class<? extends Partitioner> partitionerClass) {
+    return Map.of(ProducerConfig.PARTITIONER_CLASS_CONFIG, partitionerClass.getName());
+}
+```
+
+and a custom `Partitioner`, [TenantPartitioner.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/TenantPartitioner.java):
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/producer/recipe/TenantPartitioner.java -->
+```java
+public int partition(String topic, Object key, byte[] keyBytes, Object value, byte[] valueBytes, Cluster cluster) {
+    // ...
+    if (key instanceof String s && s.startsWith("vip-")) {
+        return 0;
+    }
+    if (keyBytes == null) {
+        return 1 + Math.floorMod(roundRobin.getAndIncrement(), partitions - 1);   // no key: round-robin over the non-vip partitions
+    }
+    return 1 + Utils.toPositive(Utils.murmur2(keyBytes)) % (partitions - 1);
+}
+```
+
+- **Leave the default for key-less records.** `roundRobin()` spread the same records into batches 4× smaller
+  (2 847 vs 11.2K bytes); the sticky default is why 4.x batches well at moderate traffic.
+- **`ignoreKeys()`** evened out the hot key's partition and put every key on several partitions: ordering per key
+  is gone, which is the point to check before using it.
+- **A custom partitioner** is registered with `KeyPartitioning.partitioner(TenantPartitioner.class)`; every producer
+  of the topic must use the same one, forever.
+
+The demo applies each map on top of `linger.ms=20` (so batches can fill and the batch sizes compare); everything
+else in [ProducerPartitioningDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerPartitioningDemo.java)
+is measurement.
 
 ## Run it
 
@@ -65,7 +113,7 @@ distinct keys: 20, keys that landed on more than one partition: 0
 With `partitioner.ignore.keys=true` the same keyed records spread evenly, and **all 20 keys land on
 more than one partition**: per-key ordering is gone.
 
-**3. A custom `Partitioner`** (`TenantPartitioner` in the demo) sends `vip-*` keys to partition 0 and
+**3. A custom `Partitioner`** (`TenantPartitioner`, shown above) sends `vip-*` keys to partition 0 and
 hashes everyone else over partitions 1–5.
 
 ## Reading the numbers
