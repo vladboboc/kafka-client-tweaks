@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Keeps a handle on every KafkaConsumer / KafkaProducer the auto-configured factories create, so the demos can
- * print the raw client metrics ({@code consumer.metrics()}) through the same {@link MetricsReport} the plain
+ * log the raw client metrics ({@code consumer.metrics()}) through the same {@link MetricsReport} the plain
  * chapters use. Boot applies these customizers to its {@code DefaultKafkaConsumerFactory} /
  * {@code DefaultKafkaProducerFactory} beans; the factory {@code Listener} is the extension point spring-kafka
  * offers for this (its Micrometer binding works the same way).

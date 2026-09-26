@@ -2,6 +2,9 @@ package io.kafkatweaks;
 
 import io.kafkatweaks.common.Args;
 import io.kafkatweaks.common.Env;
+import io.kafkatweaks.common.Table;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -15,6 +18,8 @@ import java.util.Map;
  * {@code key=value} pairs; every key containing a dot is applied on top of the demo's own configuration.
  */
 public final class Run {
+
+    private static final Logger log = LoggerFactory.getLogger(Run.class);
 
     private record Entry(String chapter, String summary, Demo demo) {
     }
@@ -56,28 +61,27 @@ public final class Run {
 
     public static void main(String[] argv) throws Exception {
         if (argv.length == 0 || argv[0].equals("help") || argv[0].equals("list")) {
-            printList();
+            logList();
             return;
         }
         Entry entry = DEMOS.get(argv[0]);
         if (entry == null) {
-            System.err.println("unknown demo '" + argv[0] + "'");
-            printList();
+            log.error("unknown demo '{}'", argv[0]);
+            logList();
             System.exit(2);
         }
         Args args = Args.parse(argv, 1);
-        System.out.printf("== %s  (chapter %s)%n", argv[0], entry.chapter());
-        System.out.printf("   %s%n", entry.summary());
-        System.out.printf("   bootstrap.servers=%s   args=%s%n%n", Env.bootstrapServers(), args);
+        log.info("== {}  (chapter {})\n   {}\n   bootstrap.servers={}   args={}",
+                argv[0], entry.chapter(), entry.summary(), Env.bootstrapServers(), args);
         entry.demo().run(args);
         // Kafka clients leave daemon threads behind; make sure the JVM (and the exec plugin) exits promptly.
         System.exit(0);
     }
 
-    private static void printList() {
-        System.out.println("usage: ./mvnw -q -pl plain-clients -am compile exec:java -Dexec.args=\"<demo> [key=value ...]\"\n");
-        System.out.printf("%-24s %-4s %s%n", "demo", "ch.", "what it shows");
-        DEMOS.forEach((name, e) -> System.out.printf("%-24s %-4s %s%n", name, e.chapter(), e.summary()));
+    private static void logList() {
+        var demos = new Table("demo", "ch.", "what it shows");
+        DEMOS.forEach((name, e) -> demos.row(name, e.chapter(), e.summary()));
+        log.info("usage: ./mvnw -q -pl plain-clients -am compile exec:java -Dexec.args=\"<demo> [key=value ...]\"\n{}", demos);
     }
 
     static void register(String name, String chapter, String summary, Demo demo) {

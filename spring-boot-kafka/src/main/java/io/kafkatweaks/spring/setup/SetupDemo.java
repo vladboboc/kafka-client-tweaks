@@ -9,6 +9,8 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.utils.AppInfoParser;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.SpringBootVersion;
 import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
@@ -35,7 +37,7 @@ import java.util.Map;
  * <ol>
  *   <li>the beans Boot auto-configured (and which ones it did not, and why)</li>
  *   <li>the properties of application-spring-setup.yml next to the client configs they became</li>
- *   <li>the shared {@code Knobs} printer on the auto-configured factories: this run vs client default</li>
+ *   <li>the shared {@code Knobs} table on the auto-configured factories: this run vs client default</li>
  *   <li>the topics KafkaAdmin created from the {@code NewTopics} bean</li>
  *   <li>versions: Boot, spring-kafka, kafka-clients here vs in plain-clients, the brokers</li>
  * </ol>
@@ -43,6 +45,8 @@ import java.util.Map;
 @Configuration(proxyBeanMethods = false)
 @Profile("spring-setup")
 public class SetupDemo {
+
+    private static final Logger log = LoggerFactory.getLogger(SetupDemo.class);
 
     @Bean
     ApplicationRunner springSetup(DemoSupport support, ApplicationContext context, ProducerFactory<?, ?> producerFactory,
@@ -60,7 +64,7 @@ public class SetupDemo {
             row(beans, context, KafkaTransactionManager.class, "only when spring.kafka.producer.transaction-id-prefix is set (ch. 19)");
             row(beans, context, CommonErrorHandler.class, "you; otherwise every container gets its own DefaultErrorHandler (ch. 18)");
             row(beans, context, MeterRegistry.class, "spring-boot-starter-micrometer-metrics; Boot then binds the client metrics");
-            beans.print("1. beans Boot auto-configured (declare a bean of the same type and Boot backs off)");
+            log.info("1. beans Boot auto-configured (declare a bean of the same type and Boot backs off)\n{}", beans);
 
             // ---- 2. property -> config ------------------------------------------------------------------------
             Map<String, Object> producer = producerFactory.getConfigurationProperties();
@@ -81,19 +85,21 @@ public class SetupDemo {
             mapping.row("consumer.fetch-max-wait: 250ms", "fetch.max.wait.ms", "", v(consumer, "fetch.max.wait.ms"), "");
             mapping.row("consumer.isolation-level: read_committed", "isolation.level", "", v(consumer, "isolation.level"), "");
             mapping.row("consumer.properties[group.protocol]: consumer", "group.protocol", "", v(consumer, "group.protocol"), "");
-            mapping.print("2. how the YAML arrived in the clients (typed keys are converted: 64KB -> 65536, 250ms -> 250)");
-            System.out.println("   precedence: spring.kafka.properties < spring.kafka.<client>.properties, and a typed key and its properties[...] twin");
-            System.out.println("   should not both be set. Anything can be overridden on the command line: --spring.kafka.producer.properties.linger.ms=50");
+            log.info("2. how the YAML arrived in the clients (typed keys are converted: 64KB -> 65536, 250ms -> 250)\n{}", mapping);
+            log.info("""
+                    precedence: spring.kafka.properties < spring.kafka.<client>.properties, and a typed key and its properties[...] twin
+                      should not both be set. Anything can be overridden on the command line: --spring.kafka.producer.properties.linger.ms=50""");
 
-            // ---- 3. this run vs client default, with the same printer the plain chapters use -----------------
-            Knobs.printProducer(DemoSupport.toProperties(producer), ProducerConfig.ACKS_CONFIG, ProducerConfig.BATCH_SIZE_CONFIG,
+            // ---- 3. this run vs client default, with the same Knobs table the plain chapters use --------------
+            Knobs.logProducer(DemoSupport.toProperties(producer), ProducerConfig.ACKS_CONFIG, ProducerConfig.BATCH_SIZE_CONFIG,
                     ProducerConfig.LINGER_MS_CONFIG, ProducerConfig.COMPRESSION_TYPE_CONFIG, ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG,
                     ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG);
-            Knobs.printConsumer(DemoSupport.toProperties(consumer), ConsumerConfig.GROUP_PROTOCOL_CONFIG, ConsumerConfig.MAX_POLL_RECORDS_CONFIG,
+            Knobs.logConsumer(DemoSupport.toProperties(consumer), ConsumerConfig.GROUP_PROTOCOL_CONFIG, ConsumerConfig.MAX_POLL_RECORDS_CONFIG,
                     ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG, ConsumerConfig.FETCH_MIN_BYTES_CONFIG, ConsumerConfig.ISOLATION_LEVEL_CONFIG,
                     ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG);
-            System.out.println("   enable.auto.commit is untouched here on purpose: the listener CONTAINER sets it to false when it creates");
-            System.out.println("   its consumer and commits offsets itself (chapter 16).");
+            log.info("""
+                    enable.auto.commit is untouched here on purpose: the listener CONTAINER sets it to false when it creates
+                      its consumer and commits offsets itself (chapter 16).""");
 
             KafkaProperties.Listener listener = properties.getListener();
             var containers = new Table("spring.kafka.listener.*", "value", "meaning");
@@ -102,15 +108,16 @@ public class SetupDemo {
             containers.row("concurrency", listener.getConcurrency() == null ? "1 (default)" : listener.getConcurrency(), "consumers per @KafkaListener (ch. 17)");
             containers.row("auto-startup", listener.isAutoStartup(), "false in this repo: demos seed first, then start their listeners");
             containers.row("poll-timeout", listener.getPollTimeout() == null ? "5s (default)" : listener.getPollTimeout(), "the Duration handed to consumer.poll()");
-            containers.print("3b. the listener container factory's own knobs (they are not client configs)");
+            log.info("3b. the listener container factory's own knobs (they are not client configs)\n{}", containers);
 
             // ---- 4. topics -----------------------------------------------------------------------------------
             try (var topics = new Topics()) {
-                topics.printPartitions(TopicsConfig.TEMPLATE);
-                topics.printPartitions(TopicsConfig.PARALLEL);
+                topics.logPartitions(TopicsConfig.TEMPLATE);
+                topics.logPartitions(TopicsConfig.PARALLEL);
             }
-            System.out.println("   4. created by KafkaAdmin from the NewTopics bean in TopicsConfig when the context started");
-            System.out.println("   (spring.kafka.admin.auto-create=true). Creation returns before leaders are elected, hence Topics.ensure() before seeding.");
+            log.info("""
+                    4. created by KafkaAdmin from the NewTopics bean in TopicsConfig when the context started
+                       (spring.kafka.admin.auto-create=true). Creation returns before leaders are elected, hence Topics.ensure() before seeding.""");
 
             // ---- 5. versions ---------------------------------------------------------------------------------
             var versions = new Table("component", "version", "decided by");
@@ -119,7 +126,7 @@ public class SetupDemo {
             versions.row("kafka-clients in this module", AppInfoParser.getVersion(), "Boot's BOM: what spring-kafka is compiled against");
             versions.row("kafka-clients in plain-clients", "4.3.1", "kafka.version in the root pom: the brokers' line");
             versions.row("brokers", "Confluent Platform 8.3.2 = Apache Kafka 4.3", "docker-compose.yml");
-            versions.print("5. versions (a 4.2 client against 4.3 brokers is a supported combination; 4.3-only client behaviour is absent here)");
+            log.info("5. versions (a 4.2 client against 4.3 brokers is a supported combination; 4.3-only client behaviour is absent here)\n{}", versions);
         });
     }
 

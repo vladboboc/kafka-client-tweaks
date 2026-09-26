@@ -3,6 +3,8 @@ package io.kafkatweaks.spring;
 import io.kafkatweaks.common.Args;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.utils.AppInfoParser;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
@@ -17,7 +19,7 @@ import java.util.Properties;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * What every demo needs around its body: the header {@code Run} prints in plain-clients, the {@code key=value}
+ * What every demo needs around its body: the header {@code Run} logs in plain-clients, the {@code key=value}
  * arguments, the exit code, and the listener containers. Auto-startup is off for all demos (application.yml),
  * so a demo seeds its topic first and then starts exactly the listeners it is about.
  */
@@ -29,6 +31,7 @@ public class DemoSupport {
         void run(Args args) throws Exception;
     }
 
+    private static final Logger log = LoggerFactory.getLogger(DemoSupport.class);
     private static final AtomicInteger EXIT_CODE = new AtomicInteger();
 
     private final KafkaProperties kafka;
@@ -44,6 +47,11 @@ public class DemoSupport {
 
     public static int exitCode() {
         return EXIT_CODE.get();
+    }
+
+    /** For the {@link Catalogue} runner: a run that named an unknown demo exits with 2. */
+    static void setExitCode(int code) {
+        EXIT_CODE.set(code);
     }
 
     /** Wraps a demo body into the ApplicationRunner a chapter's {@code @Profile} configuration exposes as a bean. */
@@ -63,14 +71,12 @@ public class DemoSupport {
             if (schemaRegistry != null) {
                 System.setProperty("schema.registry.url", schemaRegistry);
             }
-            System.out.printf("== %s  (chapter %s)%n", name, entry.chapter());
-            System.out.printf("   %s%n", entry.summary());
-            System.out.printf("   bootstrap.servers=%s   kafka-clients=%s   args=%s%n%n", bootstrap, AppInfoParser.getVersion(), args);
+            log.info("== {}  (chapter {})\n   {}\n   bootstrap.servers={}   kafka-clients={}   args={}",
+                    name, entry.chapter(), entry.summary(), bootstrap, AppInfoParser.getVersion(), args);
             try {
                 body.run(args);
             } catch (Exception e) {
-                System.err.println("demo failed: " + e);
-                e.printStackTrace();
+                log.error("demo {} failed", name, e);
                 EXIT_CODE.set(1);
             }
         };
@@ -130,7 +136,7 @@ public class DemoSupport {
         }
     }
 
-    /** {@code ProducerFactory.getConfigurationProperties()} as the Properties the shared {@code Knobs} printer expects. */
+    /** {@code ProducerFactory.getConfigurationProperties()} as the Properties the shared {@code Knobs} tables expect. */
     public static Properties toProperties(Map<String, ?> configs) {
         var p = new Properties();
         p.putAll(configs);

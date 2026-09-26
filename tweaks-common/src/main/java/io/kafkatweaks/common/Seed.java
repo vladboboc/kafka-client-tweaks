@@ -3,11 +3,15 @@ package io.kafkatweaks.common;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Map;
 
 /** Fills a topic for the consumer chapters, quickly (chapter 02 settings), only if it does not already hold enough. */
 public final class Seed {
+
+    private static final Logger log = LoggerFactory.getLogger(Seed.class);
 
     private Seed() {
     }
@@ -27,7 +31,7 @@ public final class Seed {
         topics.ensure(topic, partitions);
         long present = topics.endOffsets(topic).values().stream().mapToLong(Long::longValue).sum();
         if (present >= records) {
-            System.out.printf("topic %s already holds %d records%n", topic, present);
+            log.info("topic {} already holds {} records", topic, present);
             return present;
         }
         var props = Env.producer("seed-" + topic);
@@ -43,10 +47,10 @@ public final class Seed {
         // returning the REQUESTED count after a partial seed turns a seeding failure into a hang or a timeout
         // somewhere else entirely.
         long now = topics.endOffsets(topic).values().stream().mapToLong(Long::longValue).sum();
-        System.out.printf("seeded %d records into %s (now %d)%n", now - present, topic, now);
+        log.info("seeded {} records into {} (now {})", now - present, topic, now);
         if (now < records) {
-            System.out.printf("WARNING: %d of the %d requested records were not written (check the broker log); "
-                    + "the demo continues with %d%n", records - now, records, now);
+            log.warn("{} of the {} requested records were not written (check the broker log); the demo continues with {}",
+                    records - now, records, now);
         }
         return now;
     }

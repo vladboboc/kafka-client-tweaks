@@ -16,9 +16,10 @@ import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.RangeAssignor;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.WakeupException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -36,12 +37,13 @@ import java.util.stream.Collectors;
  * membership, comes back). Every revoke/assign callback is stamped on a timeline so the difference between
  * "stop the world" and incremental rebalancing is visible.
  * <pre>
- *   scenarios=a,b,c   subset of the scenario keys printed by the demo
+ *   scenarios=a,b,c   subset of the scenario keys logged by the demo
  *   settle=4          seconds of silence before a state counts as stable
  * </pre>
  */
 public final class ConsumerRebalanceDemo implements Demo {
 
+    private static final Logger log = LoggerFactory.getLogger(ConsumerRebalanceDemo.class);
     private static final String TOPIC = "tweaks.rebalance";
 
     record Scenario(String key, String title, Map<String, ?> config, boolean staticMembers) {
@@ -68,16 +70,15 @@ public final class ConsumerRebalanceDemo implements Demo {
         try (var topics = new Topics()) {
             Seed.ensure(topics, TOPIC, 6, 6000, 200);
         }
-        Knobs.printConsumer(Env.consumer("knobs", "knobs"), ConsumerConfig.GROUP_PROTOCOL_CONFIG,
+        Knobs.logConsumer(Env.consumer("knobs", "knobs"), ConsumerConfig.GROUP_PROTOCOL_CONFIG,
                 ConsumerConfig.GROUP_REMOTE_ASSIGNOR_CONFIG, ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG,
                 ConsumerConfig.GROUP_INSTANCE_ID_CONFIG, ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG,
                 ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG, ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG);
-        System.out.println("""
-                  kafka-clients 4.3 still defaults group.protocol to classic; KIP-1274 deprecates classic and logs a warning
+        log.info("""
+                kafka-clients 4.3 still defaults group.protocol to classic; KIP-1274 deprecates classic and logs a warning
                   when it is used. With group.protocol=consumer the assignment is computed by the group coordinator and
                   session.timeout.ms / heartbeat.interval.ms are BROKER settings (group.consumer.session.timeout.ms=45000,
-                  group.consumer.heartbeat.interval.ms=5000 in docker-compose.yml); the client-side values are ignored.
-                """);
+                  group.consumer.heartbeat.interval.ms=5000 in docker-compose.yml); the client-side values are ignored.""");
 
         var summary = new Table("scenario", "rebalances seen by A", "partitions A lost when B joined", "partitions A lost when C joined",
                 "A's rebalance-latency-avg ms", "A's rebalance-total");
@@ -87,21 +88,21 @@ public final class ConsumerRebalanceDemo implements Demo {
             }
             summary.row(runScenario(args, s, settleSeconds));
         }
-        summary.print("summary");
-        System.out.println("""
+        log.info("summary\n{}", summary);
+        log.info("""
+                reading it
                   eager (classic + Range/RoundRobin): every member gives up ALL partitions on every change, then gets a new set.
                     Processing stops for the whole group for the duration of the rebalance (rebalance-latency).
                   incremental (classic + CooperativeSticky, or the consumer protocol): only the partitions that must move are
                     revoked; the others keep being consumed. The consumer protocol also removes the JoinGroup/SyncGroup
                     round trips: members learn their new assignment through heartbeats.
                   static membership (group.instance.id): a restart within session.timeout.ms is not a leave; the member gets
-                    its old partitions back and nobody else notices. Use it for stateful consumers and rolling deploys.
-                """);
+                    its old partitions back and nobody else notices. Use it for stateful consumers and rolling deploys.""");
     }
 
     private static Object[] runScenario(Args args, Scenario s, int settleSeconds) throws InterruptedException {
         String group = "rebalance-" + s.key() + "-" + System.nanoTime() % 100_000;
-        System.out.printf("%n=== %s%n    %s   (group %s)%n", s.key(), s.title(), group);
+        log.info("=== {}\n    {}   (group {})", s.key(), s.title(), group);
         var timeline = new Timeline();
 
         // Every member owns a consumer on its own platform thread, so stopping them is not optional: an exception
@@ -133,9 +134,9 @@ public final class ConsumerRebalanceDemo implements Demo {
             } else {
                 timeline.waitUntilStable(settleSeconds, a, c);
             }
-            timeline.print();
+            log.info("timeline:\n{}", timeline);
             try (var topics = new Topics()) {
-                topics.printAssignments(group);
+                topics.logAssignments(group);
             }
             var m = a.metrics();
             double latency = MetricsReport.value(m, MetricsReport.CONSUMER_COORDINATOR, "rebalance-latency-avg");
@@ -307,9 +308,10 @@ public final class ConsumerRebalanceDemo implements Demo {
             return (int) lines.stream().filter(l -> l.contains(" " + member + " assigned")).count();
         }
 
-        void print() {
-            System.out.println("timeline:");
-            new ArrayList<>(lines).forEach(l -> System.out.println("  " + l));
+        /** One line per callback or mark, indented, ready to be logged under a title. */
+        @Override
+        public String toString() {
+            return lines.stream().map(l -> "  " + l).collect(Collectors.joining("\n"));
         }
 
         private double seconds() {

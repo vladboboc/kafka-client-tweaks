@@ -12,6 +12,8 @@ import io.kafkatweaks.producer.recipe.ThroughputProducer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -22,7 +24,7 @@ import java.util.Properties;
 
 /**
  * Chapter 02: throughput. Measures {@link ThroughputProducer}; everything else in this file is measurement.
- * Runs the same workload under a matrix of batching and compression settings and prints them side by side.
+ * Runs the same workload under a matrix of batching and compression settings and logs them side by side.
  * Then shows what happens when the accumulator fills up.
  *
  * <pre>
@@ -34,6 +36,8 @@ import java.util.Properties;
  * </pre>
  */
 public final class ProducerBatchingDemo implements Demo {
+
+    private static final Logger log = LoggerFactory.getLogger(ProducerBatchingDemo.class);
 
     /** Preset name → overrides on top of the client defaults. Order is the order of the tables. */
     static final Map<String, Map<String, ?>> PRESETS = new LinkedHashMap<>();
@@ -65,8 +69,7 @@ public final class ProducerBatchingDemo implements Demo {
             topics.ensure(topic, 3);
         }
 
-        System.out.printf("payload: %s, %d bytes/record, %d records per run, %d bytes total per run%n%n",
-                payload, size, records, records * size);
+        log.info("payload: {}, {} bytes/record, {} records per run, {} bytes total per run", payload, size, records, records * size);
 
         Workload.warmUp(topic);
 
@@ -74,26 +77,24 @@ public final class ProducerBatchingDemo implements Demo {
         for (String name : runs) {
             Map<String, ?> preset = PRESETS.get(name);
             if (preset == null) {
-                System.err.println("unknown preset '" + name + "', known: " + PRESETS.keySet());
+                log.warn("unknown preset '{}', known: {}", name, PRESETS.keySet());
                 continue;
             }
             Properties props = Env.producer("batching-" + name);
             props.putAll(preset);
             args.applyOverrides(props);
-            System.out.printf("running %-26s %s%n", name, preset.isEmpty() ? "(client defaults)" : preset);
+            log.info("running {} {}", "%-26s".formatted(name), preset.isEmpty() ? "(client defaults)" : preset);
             results.add(Workload.run(name, props, topic, records, size, payload, 0));
         }
-        Workload.printComparison(results);
+        Workload.logComparison(results);
 
-        System.out.println("""
-
+        log.info("""
                 how to read it
                   batch-size-avg          bigger batches = fewer requests per record = less broker work per record
                   records-per-request-avg the same thing from the request side
                   compression-rate-avg    compressed/uncompressed bytes; JSON compresses ~5-10x, random text ~1.0
                   record-queue-time-avg   what linger.ms costs each record in the accumulator
-                  ack p99                 the latency the caller sees; batching trades this for records/s
-                """);
+                  ack p99                 the latency the caller sees; batching trades this for records/s""");
 
         if (args.getBool("buffer-demo", true)) {
             bufferDemo(args, topic, size);
@@ -115,15 +116,14 @@ public final class ProducerBatchingDemo implements Demo {
         var table = new Table("buffer.memory", "max.block.ms", "sent", "outcome", "bufferpool-wait-ratio", "buffer-available-bytes (end)");
         table.row(bufferRun(args, topic, size, records, 32 * 1024 * 1024, 60_000));
         table.row(bufferRun(args, topic, size, records, 1024 * 1024, 20));
-        table.print("back-pressure: %d random records of %d bytes, linger.ms=100 so batches sit in the accumulator".formatted(records, size));
-        System.out.println("""
+        log.info("back-pressure: {} random records of {} bytes, linger.ms=100 so batches sit in the accumulator\n{}", records, size, table);
+        log.info("""
                 bufferpool-wait-ratio > 0 means send() is already blocking on memory: the app is faster than the network.
-                options: bigger buffer.memory (more latency, not more throughput), shorter linger.ms, compression,
-                more partitions/brokers, or accept it: read the BufferExhaustedException from the send() callback or
-                future and drop / spill / slow the caller. send() itself does not throw it, so a producer that passes
-                no callback and never looks at the future drops those records without noticing.
-                buffer-available-bytes is the gauge to alert on before records start being rejected.
-                """);
+                  options: bigger buffer.memory (more latency, not more throughput), shorter linger.ms, compression,
+                  more partitions/brokers, or accept it: read the BufferExhaustedException from the send() callback or
+                  future and drop / spill / slow the caller. send() itself does not throw it, so a producer that passes
+                  no callback and never looks at the future drops those records without noticing.
+                  buffer-available-bytes is the gauge to alert on before records start being rejected.""");
     }
 
     private static Object[] bufferRun(Args args, String topic, int size, long records, long bufferMemory, long maxBlockMs) {

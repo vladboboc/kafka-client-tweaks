@@ -10,6 +10,8 @@ import io.kafkatweaks.spring.share.recipe.ShareConfig;
 import io.kafkatweaks.spring.share.recipe.ShareListeners;
 import org.apache.kafka.clients.admin.ShareGroupDescription;
 import org.apache.kafka.clients.admin.ShareMemberDescription;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -41,6 +43,8 @@ import java.util.stream.Collectors;
 @Configuration(proxyBeanMethods = false)
 @Profile("spring-share")
 public class ShareDemo {
+
+    private static final Logger log = LoggerFactory.getLogger(ShareDemo.class);
 
     /** The share groups of this chapter with their share.record.lock.duration.ms. */
     static final Map<String, String> GROUP_LOCK_MS = new LinkedHashMap<>();
@@ -85,8 +89,9 @@ public class ShareDemo {
                             "share.delivery.count.limit", "3"));
                 }
             }
-            System.out.println("group configs (Admin.incrementalAlterConfigs on ConfigResource.Type.GROUP, for all six groups): share.auto.offset.reset=earliest,");
-            System.out.println("share.delivery.count.limit=3, share.record.lock.duration.ms=2000 (10000 for spring-share-lock-10s)\n");
+            log.info("""
+                    group configs (Admin.incrementalAlterConfigs on ConfigResource.Type.GROUP, for all six groups): share.auto.offset.reset=earliest,
+                      share.delivery.count.limit=3, share.record.lock.duration.ms=2000 (10000 for spring-share-lock-10s)""");
 
             // ---- 1. EXPLICIT: the container acknowledges ------------------------------------------------------------
             var sw = Stopwatch.start();
@@ -94,18 +99,20 @@ public class ShareDemo {
             support.container("share-explicit").start();   // not support.start(): a share container has no partition assignment to wait for
             await(() -> script.stats("share-explicit").calls(), total, Duration.ofSeconds(90), "share-explicit");
             double ms = sw.elapsedMillis();
-            long idleMembers = printMembers("spring-share-explicit", "");
+            long idleMembers = logMembers("spring-share-explicit", "");
             support.stop("share-explicit");
             var s1 = script.stats("share-explicit");
             var t1 = new Table("consumer thread (one KafkaShareConsumer each)", "records", "from partitions");
             s1.callsPerThread().forEach((thread, n) -> t1.row(thread, n, s1.partitions(thread)));
             t1.row("total", s1.calls(), "distinct records %d, delivered more than once %d".formatted(s1.distinct(), s1.redelivered()));
-            t1.print("1. share-explicit: ShareAckMode.EXPLICIT (the default), concurrency=4 on 3 partitions, %d ms of work per record: %d records in %.0f ms, the first one after %.0f ms"
-                    .formatted(workMs, total, ms, s1.firstRecordMs(startNanos)));
-            System.out.println("   the container ACCEPTs every record the listener returns from and commits a poll's acknowledgements after its last record.");
-            System.out.printf("   members the coordinator gave a partition: %d of 4; consumers that received records: %d of 4.%n", 4 - idleMembers, s1.callsPerThread().size());
-            System.out.println("   The assignor guarantees every PARTITION a member, not every member a partition, and within a partition the records go to whoever");
-            System.out.println("   fetches first. A 4th consumer in a consumer GROUP on 3 partitions would have received nothing, every time.");
+            log.info("1. share-explicit: ShareAckMode.EXPLICIT (the default), concurrency=4 on 3 partitions, {} ms of work per record: {} records in {} ms, the first one after {} ms\n{}",
+                    workMs, total, Math.round(ms), Math.round(s1.firstRecordMs(startNanos)), t1);
+            log.info("""
+                    the container ACCEPTs every record the listener returns from and commits a poll's acknowledgements after its last record.
+                      members the coordinator gave a partition: {} of 4; consumers that received records: {} of 4.
+                      The assignor guarantees every PARTITION a member, not every member a partition, and within a partition the records go to whoever
+                      fetches first. A 4th consumer in a consumer GROUP on 3 partitions would have received nothing, every time.""",
+                    4 - idleMembers, s1.callsPerThread().size());
 
             // ---- 2. MANUAL: the listener decides, and must decide -----------------------------------------------------
             sw = Stopwatch.start();
@@ -114,12 +121,12 @@ public class ShareDemo {
             // run until the count stops moving (and the stalled thread has logged its 5 s warning).
             long lastProgressNanos = System.nanoTime();
             long lastSeen = -1;
-            boolean membersPrinted = false;
+            boolean membersLogged = false;
             while (script.manualTerminal() < total && sw.elapsedMillis() < 90_000) {
                 long seen = script.manualTerminal();
-                if (!membersPrinted && seen > 0) {
-                    printMembers("spring-share-manual", "at the first record");   // the assignment can still change for a few seconds
-                    membersPrinted = true;
+                if (!membersLogged && seen > 0) {
+                    logMembers("spring-share-manual", "at the first record");   // the assignment can still change for a few seconds
+                    membersLogged = true;
                 }
                 if (seen != lastSeen) {
                     lastSeen = seen;
@@ -130,7 +137,7 @@ public class ShareDemo {
                 DemoSupport.sleep(100);
             }
             ms = sw.elapsedMillis();
-            printMembers("spring-share-manual", "at the end");
+            logMembers("spring-share-manual", "at the end");
             support.stop("share-manual");
             var s2 = script.stats("share-manual");
             long undelivered = total - s2.distinct();
@@ -143,12 +150,12 @@ public class ShareDemo {
             t2.row("(records never delivered)", undelivered, undelivered > 0
                     ? "in the partitions only the stalled thread was assigned: no other member may fetch them, lock or no lock"
                     : "the other thread shares the stalled thread's partitions and took its records over after the 2 s lock");
-            t2.print("2. share-manual: ShareAckMode.MANUAL, concurrency=2: %d listener calls, %d of %d records reached a terminal state, %.0f ms"
-                    .formatted(s2.calls(), script.manualTerminal(), total, ms));
+            log.info("2. share-manual: ShareAckMode.MANUAL, concurrency=2: {} listener calls, {} of {} records reached a terminal state, {} ms\n{}",
+                    s2.calls(), script.manualTerminal(), total, Math.round(ms), t2);
             var t2b = new Table("consumer thread", "calls", "partitions seen", "");
             s2.callsPerThread().forEach((thread, n) -> t2b.row(thread, n, s2.partitions(thread),
                     thread.equals(script.stalledThread()) ? "stalled in the poll that contained spring.queue-0@" + ShareScript.FORGOTTEN_OFFSET : ""));
-            t2b.print("   consumer threads of share-manual (thread C-n runs member n-1 of the table above)");
+            log.info("consumer threads of share-manual (thread C-n runs member n-1 of the table above)\n{}", t2b);
 
             // ---- 3. EXPLICIT + recoverer -----------------------------------------------------------------------------
             sw = Stopwatch.start();
@@ -161,8 +168,8 @@ public class ShareDemo {
             t3.row("returned normally", script.recoverOk(), "(none: the container ACCEPTs)", "done");
             t3.row("threw TransientFailure (first delivery only)", script.transientThrown(), "RELEASE x" + outcomes.released(), "redelivered with deliveryCount 2, then processed");
             t3.row("threw IllegalStateException", script.poisonThrown(), "REJECT x" + outcomes.rejected(), "archived (the default recoverer does this for every exception)");
-            t3.print("3. share-recover: EXPLICIT + ShareConsumerRecordRecoverer, concurrency=2: %d calls for %d records in %.0f ms; redelivered %d, max deliveryCount %d"
-                    .formatted(s3.calls(), total, ms, s3.redelivered(), s3.maxDeliveryCount()));
+            log.info("3. share-recover: EXPLICIT + ShareConsumerRecordRecoverer, concurrency=2: {} calls for {} records in {} ms; redelivered {}, max deliveryCount {}\n{}",
+                    s3.calls(), total, Math.round(ms), s3.redelivered(), s3.maxDeliveryCount(), t3);
 
             // ---- 4. acquisition locks ---------------------------------------------------------------------------------
             var t4 = new Table("listener", "ack mode", "lock", "listener calls", "distinct records", "max deliveryCount", "acks committed", "acks refused", "renewals", "ms");
@@ -175,19 +182,21 @@ public class ShareDemo {
             lockVariant(support, script, outcomes, t4, "share-lock-renew", "MANUAL + renew()", "2 s",
                     (committed, refused, stats) -> script.renewDone() && committed >= LOCK_RECORDS + script.renewals(),
                     () -> script.renewals() + " (record came back " + script.redeliveredWhileRenewing() + "x)");
-            t4.print("4. %d records on a 1-partition topic, one consumer thread, the record at offset %d takes %d ms; one poll acquires all %d"
-                    .formatted(LOCK_RECORDS, ShareScript.SLOW_OFFSET, ShareScript.SLOW_MS, LOCK_RECORDS));
-            System.out.println("   refused with: " + outcomes.lastRefusal());
-            System.out.println("   EXPLICIT commits a poll's acknowledgements after its LAST record: one 3 s record let all 40 locks (2 s) expire, every ACCEPT of");
-            System.out.println("   the pass was refused and the whole pass came back with deliveryCount 2 (a 3rd pass would follow, then share.delivery.count.limit=3");
-            System.out.println("   archives them: processed 3 times, never acknowledged). A lock longer than the slowest POLL fixes it. So does MANUAL mode with the");
-            System.out.println("   work on a worker thread and renew(): the renewed record comes back from every poll (~1 s) with the same deliveryCount until it is");
-            System.out.println("   acknowledged; the broker confirmed each renewal (counted under acks committed).");
+            log.info("4. {} records on a 1-partition topic, one consumer thread, the record at offset {} takes {} ms; one poll acquires all {}\n{}",
+                    LOCK_RECORDS, ShareScript.SLOW_OFFSET, ShareScript.SLOW_MS, LOCK_RECORDS, t4);
+            log.info("refused with: {}", outcomes.lastRefusal());
+            log.info("""
+                    EXPLICIT commits a poll's acknowledgements after its LAST record: one 3 s record let all 40 locks (2 s) expire, every ACCEPT of
+                      the pass was refused and the whole pass came back with deliveryCount 2 (a 3rd pass would follow, then share.delivery.count.limit=3
+                      archives them: processed 3 times, never acknowledged). A lock longer than the slowest POLL fixes it. So does MANUAL mode with the
+                      work on a worker thread and renew(): the renewed record comes back from every poll (~1 s) with the same deliveryCount until it is
+                      acknowledged; the broker confirmed each renewal (counted under acks committed).""");
 
-            System.out.println("\nlifecycle events (a share container publishes no rebalance, idle or pause events):");
+            var lifecycle = new Table("listener", "lifecycle events");
             for (String id : List.of("share-explicit", "share-manual", "share-recover", "share-lock-2s", "share-lock-10s", "share-lock-renew")) {
-                System.out.printf("   %-18s %s%n", id, events.summary(id));
+                lifecycle.row(id, events.summary(id));
             }
+            log.info("lifecycle events (a share container publishes no rebalance, idle or pause events)\n{}", lifecycle);
             listeners.shutdown();
         });
     }
@@ -210,14 +219,14 @@ public class ShareDemo {
                 outcomes.committed(topic) - committed0, outcomes.refused(topic) - refused0, renewals.get(), "%.0f".formatted(ms));
     }
 
-    /** Prints the coordinator's view of the group (Admin.describeShareGroups); returns how many members hold no partition. */
-    private static long printMembers(String group, String when) throws Exception {
+    /** Logs the coordinator's view of the group (Admin.describeShareGroups); returns how many members hold no partition. */
+    private static long logMembers(String group, String when) throws Exception {
         try (var topics = new Topics()) {
             ShareGroupDescription description = topics.admin().describeShareGroups(List.of(group)).all().get().get(group);
             var table = new Table("member (client.id = listener id + consumer index)", "assigned partitions");
             description.members().stream().sorted(Comparator.comparing(ShareMemberDescription::clientId)).forEach(m ->
                     table.row(m.clientId(), m.assignment().topicPartitions().stream().map(tp -> String.valueOf(tp.partition())).sorted().collect(Collectors.joining(","))));
-            table.print(("share group %s: state %s %s".formatted(group, description.groupState(), when)).trim());
+            log.info("{}\n{}", ("share group %s: state %s %s".formatted(group, description.groupState(), when)).trim(), table);
             return description.members().stream().filter(m -> m.assignment().topicPartitions().isEmpty()).count();
         }
     }

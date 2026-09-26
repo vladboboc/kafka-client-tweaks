@@ -23,6 +23,8 @@ import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -45,6 +47,7 @@ import java.util.concurrent.ExecutionException;
  */
 public final class AvroDemo implements Demo {
 
+    private static final Logger log = LoggerFactory.getLogger(AvroDemo.class);
     private static final String TOPIC = "tweaks.avro";
     private static final String SUBJECT = TOPIC + "-value";
 
@@ -58,7 +61,7 @@ public final class AvroDemo implements Demo {
             topics.delete(TOPIC + "-noreg");
         }
         resetSubjects(registry, SUBJECT, Order.getClassSchema().getFullName(), TOPIC + "-noreg-value");
-        System.out.printf("schema registry: %s   subject for %s values: %s%n", Env.schemaRegistryUrl(), TOPIC, SUBJECT);
+        log.info("schema registry: {}   subject for {} values: {}", Env.schemaRegistryUrl(), TOPIC, SUBJECT);
 
         roundTrip(args, registry, records);
         knobs(args, registry);
@@ -68,19 +71,19 @@ public final class AvroDemo implements Demo {
     // ------------------------------------------------------------------ 1. round trip
 
     private static void roundTrip(Args args, SchemaRegistryClient registry, int records) throws Exception {
-        System.out.println("\n1. producing generated Order records with KafkaAvroSerializer (auto.register.schemas=true, the default)\n");
+        log.info("1. producing generated Order records with KafkaAvroSerializer (auto.register.schemas=true, the default)");
 
         // First attempt, before trusting the generated class: Avro >= 1.12.1 refuses to resolve it, on the
         // SERIALIZER side too (the Confluent serializer looks the schema up through SpecificData by class).
         try (var producer = new KafkaProducer<String, Order>(avroProducerProps(args, "avro-untrusted"))) {
             producer.send(new ProducerRecord<>(TOPIC, "ORD-0", order(0))).get();
-            System.out.println("unexpected: the untrusted class serialized fine");
+            log.warn("unexpected: the untrusted class serialized fine");
         } catch (Exception e) {
             Throwable root = rootCause(e);
-            System.out.printf("FAILED before AvroTrust: %s: %s%n", root.getClass().getSimpleName(), firstLine(root.getMessage()));
+            log.info("FAILED before AvroTrust: {}: {}", root.getClass().getSimpleName(), firstLine(root.getMessage()));
         }
         AvroTrust.trustGeneratedClasses();
-        System.out.println("after AvroTrust.trustGeneratedClasses():\n");
+        log.info("after AvroTrust.trustGeneratedClasses():");
 
         long avroBytes = 0;
         double firstSendMs, laterAvgMs;
@@ -96,9 +99,9 @@ public final class AvroDemo implements Demo {
             laterAvgMs = (System.nanoTime() - t0) / 1e6 / (records - 1);
         }
         SchemaMetadata latest = registry.getLatestSchemaMetadata(SUBJECT);
-        System.out.printf("registered: subject %s, schema id %d, version %d%n", SUBJECT, latest.getId(), latest.getVersion());
-        System.out.printf("first send: %.0f ms (schema registration + lookup over HTTP), later sends: %.2f ms avg (schema id cached in the serializer)%n%n",
-                firstSendMs, laterAvgMs);
+        log.info("registered: subject {}, schema id {}, version {}", SUBJECT, latest.getId(), latest.getVersion());
+        log.info("first send: {} ms (schema registration + lookup over HTTP), later sends: {} ms avg (schema id cached in the serializer)",
+                Math.round(firstSendMs), "%.2f".formatted(laterAvgMs));
 
         long jsonBytes = 0;
         try (var json = new JsonSerde<>(io.kafkatweaks.common.Order.class)) {
@@ -106,19 +109,18 @@ public final class AvroDemo implements Demo {
                 jsonBytes += json.serialize(TOPIC, io.kafkatweaks.common.Order.sample(i)).length;
             }
         }
-        new Table("format", "bytes/record", "what is on the wire")
+        var sizes = new Table("format", "bytes/record", "what is on the wire")
                 .row("Confluent Avro", (double) avroBytes / records, "magic byte 0x00 + 4-byte schema id + Avro binary (no field names)")
-                .row("JSON (Jackson)", (double) jsonBytes / records, "field names + values as text, no schema id")
-                .print("payload size, same order data");
+                .row("JSON (Jackson)", (double) jsonBytes / records, "field names + values as text, no schema id");
+        log.info("payload size, same order data\n{}", sizes);
 
-        System.out.println("\nconsuming with KafkaAvroDeserializer, specific.avro.reader=true:");
+        log.info("consuming with KafkaAvroDeserializer, specific.avro.reader=true:");
         Order sample = consumeSpecific(args, records);
-        System.out.printf("  read %d records; first: %s%n", records, sample);
-        System.out.println("""
-                  the deserializer reads the schema id, fetches the writer schema from the registry once (cached), and
+        log.info("read {} records; first: {}", records, sample);
+        log.info("""
+                the deserializer reads the schema id, fetches the writer schema from the registry once (cached), and
                   resolves the schema's full name to the generated class. Avro >= 1.12.1 refuses class lookups (on both
-                  sides) unless the class is trusted, hence AvroTrust (or -Dorg.apache.avro.SERIALIZABLE_PACKAGES=...).
-                """);
+                  sides) unless the class is trusted, hence AvroTrust (or -Dorg.apache.avro.SERIALIZABLE_PACKAGES=...).""");
     }
 
     private static Order consumeSpecific(Args args, int expected) {
@@ -150,8 +152,7 @@ public final class AvroDemo implements Demo {
     // ------------------------------------------------------------------ 2. knobs
 
     private static void knobs(Args args, SchemaRegistryClient registry) throws Exception {
-        System.out.println("""
-
+        log.info("""
                 2. serializer knobs
                    auto.register.schemas   true: the serializer registers whatever it is given (fine for dev, dangerous in prod:
                                            a refactor silently becomes a new schema version). false: the schema must already exist.
@@ -160,8 +161,7 @@ public final class AvroDemo implements Demo {
                    value.subject.name.strategy  TopicNameStrategy (<topic>-value, one schema type per topic, default),
                                            RecordNameStrategy (<record full name>, many event types in one topic),
                                            TopicRecordNameStrategy (<topic>-<record full name>)
-                   normalize.schemas       ignore irrelevant ordering when comparing/registering schemas
-                """);
+                   normalize.schemas       ignore irrelevant ordering when comparing/registering schemas""");
         var table = new Table("setting", "outcome");
 
         Properties noReg = avroProducerProps(args, "avro-noreg");
@@ -189,14 +189,14 @@ public final class AvroDemo implements Demo {
             producer.send(new ProducerRecord<>(TOPIC, "k", order(3))).get();
         }
         table.row("auto.register.schemas=false + use.latest.version=true", "send OK: uses the registry's latest version of " + SUBJECT + " (the production setting)");
-        table.print("");
-        System.out.println("subjects now in the registry: " + registry.getAllSubjects());
+        log.info("what each setting did\n{}", table);
+        log.info("subjects now in the registry: {}", registry.getAllSubjects());
     }
 
     // ------------------------------------------------------------------ 3. evolution
 
     private static void evolution(Args args, SchemaRegistryClient registry) throws Exception {
-        System.out.printf("%n3. evolution. Subject compatibility is %s (registry default BACKWARD: a NEW schema must be able to read data written with the OLD one).%n%n",
+        log.info("3. evolution. Subject compatibility is {} (registry default BACKWARD: a NEW schema must be able to read data written with the OLD one).",
                 compatibility(registry, SUBJECT));
         Schema v1 = Order.getClassSchema();
         Schema v2 = withField(v1, "{\"name\":\"channel\",\"type\":\"string\",\"default\":\"web\"}");
@@ -207,9 +207,9 @@ public final class AvroDemo implements Demo {
         table.row("v2 = v1 + channel:string default \"web\"", registry.testCompatibility(SUBJECT, new AvroSchema(v2)), tryRegister(registry, SUBJECT, v2));
         table.row("v3 = v1 + salesRep:string (NO default)", registry.testCompatibility(SUBJECT, new AvroSchema(v3)), tryRegister(registry, SUBJECT, v3));
         table.row("v4 = v1 with currency: string -> int", registry.testCompatibility(SUBJECT, new AvroSchema(v4)), tryRegister(registry, SUBJECT, v4));
-        table.print("");
+        log.info("three candidate schemas for {}\n{}", SUBJECT, table);
 
-        System.out.println("\nreading the v1 records with the LATEST schema (v2) as reader schema, as a GenericRecord:");
+        log.info("reading the v1 records with the LATEST schema (v2) as reader schema, as a GenericRecord:");
         Properties props = Env.consumer("avro-generic-" + System.nanoTime(), "avro-generic");
         props.putAll(AvroClients.latestSchemaConsumer(Env.schemaRegistryUrl()));
         props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "1");
@@ -227,24 +227,25 @@ public final class AvroDemo implements Demo {
                 }
             }
             if (r != null) {
-                System.out.printf("  reader schema fields: %s%n  record: %s%n", r.getSchema().getFields().stream().map(Schema.Field::name).toList(), r);
-                System.out.println("  'channel' is filled from the v2 default: old data, new shape. That is what BACKWARD compatibility buys.");
+                log.info("reader schema fields: {}", r.getSchema().getFields().stream().map(Schema.Field::name).toList());
+                log.info("record: {}", r);
+                log.info("'channel' is filled from the v2 default: old data, new shape. That is what BACKWARD compatibility buys.");
             }
         }
 
-        System.out.println("\nforcing the incompatible v3 in by setting the subject to NONE (what you do NOT want in production):");
+        log.info("forcing the incompatible v3 in by setting the subject to NONE (what you do NOT want in production):");
         registry.updateCompatibility(SUBJECT, "NONE");
-        System.out.printf("  compatibility now %s; register v3 -> %s%n", compatibility(registry, SUBJECT), tryRegister(registry, SUBJECT, v3));
+        log.info("compatibility now {}; register v3 -> {}", compatibility(registry, SUBJECT), tryRegister(registry, SUBJECT, v3));
         registry.updateCompatibility(SUBJECT, "BACKWARD");
-        System.out.printf("  restored to %s. A consumer using v3 as reader schema can no longer read v1/v2 records (salesRep has no default).%n", compatibility(registry, SUBJECT));
+        log.info("restored to {}. A consumer using v3 as reader schema can no longer read v1/v2 records (salesRep has no default).", compatibility(registry, SUBJECT));
 
-        new Table("level", "who must be upgraded first", "allowed changes (Avro)")
+        var levels = new Table("level", "who must be upgraded first", "allowed changes (Avro)")
                 .row("BACKWARD (default)", "consumers", "add field WITH default, remove field")
                 .row("FORWARD", "producers", "add field, remove field WITH default")
                 .row("FULL", "either", "add/remove fields WITH defaults only")
                 .row("*_TRANSITIVE", "same, checked against ALL versions, not just the latest", "")
-                .row("NONE", "nobody checks anything", "everything; expect broken consumers")
-                .print("compatibility levels");
+                .row("NONE", "nobody checks anything", "everything; expect broken consumers");
+        log.info("compatibility levels\n{}", levels);
     }
 
     // ------------------------------------------------------------------ helpers

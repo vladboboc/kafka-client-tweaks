@@ -12,6 +12,8 @@ import io.kafkatweaks.spring.listener.recipe.AckModeListeners;
 import io.kafkatweaks.spring.listener.recipe.CountingRecordInterceptor;
 import io.kafkatweaks.spring.listener.recipe.ListenerRecipe;
 import io.kafkatweaks.spring.listener.recipe.ReplayListener;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -38,6 +40,8 @@ import java.util.function.LongSupplier;
 @Configuration(proxyBeanMethods = false)
 @Profile("spring-listener-acks")
 public class ListenerAcksDemo {
+
+    private static final Logger log = LoggerFactory.getLogger(ListenerAcksDemo.class);
 
     /** listener id -> what its ackMode means; the ids are also the {@code clientIdPrefix} values. */
     static final Map<String, String> ACK_MODES = Map.of(
@@ -79,7 +83,7 @@ public class ListenerAcksDemo {
                 modes.row(id, probe.count(id), "%.0f".formatted(commits), Double.isNaN(latency) ? "-" : "%.2f".formatted(latency),
                         "%.0f".formatted(drainMs), ACK_MODES.get(id));
             }
-            modes.print("1. %d records, 3 partitions, one listener per ackMode (commit-total from consumer-coordinator-metrics; commits are synchronous)".formatted(total));
+            log.info("1. {} records, 3 partitions, one listener per ackMode (commit-total from consumer-coordinator-metrics; commits are synchronous)\n{}", total, modes);
 
             // ---- 2. nack -------------------------------------------------------------------------------------
             support.start("acks-nack");
@@ -87,9 +91,10 @@ public class ListenerAcksDemo {
             support.stop("acks-nack");
             var timeline = new Table("t ms", "partition", "offset", "attempt", "listener did");
             probe.nackTimeline().stream().limit(12).forEach(d -> timeline.row(d.tMs(), d.partition(), d.offset(), d.attempt(), d.action()));
-            timeline.print("2. ackMode=MANUAL, max.poll.records=5, partition 0 assigned manually from offset 0; the listener nacks offset 3 once");
-            System.out.println("   nack: the offsets acknowledged so far are committed, the rest of the poll (offset 4) is dropped before the listener sees it,");
-            System.out.println("   the consumer is paused for the sleep, then polling resumes AT the nacked record. Resolution = poll-timeout (1 s here).");
+            log.info("2. ackMode=MANUAL, max.poll.records=5, partition 0 assigned manually from offset 0; the listener nacks offset 3 once\n{}", timeline);
+            log.info("""
+                    nack: the offsets acknowledged so far are committed, the rest of the poll (offset 4) is dropped before the listener sees it,
+                      the consumer is paused for the sleep, then polling resumes AT the nacked record. Resolution = poll-timeout (1 s here).""");
 
             // ---- 3. replay -----------------------------------------------------------------------------------
             support.start("acks-replay");
@@ -100,7 +105,7 @@ public class ListenerAcksDemo {
             var firsts = probe.firstReplayedOffsets();
             endOffsets.entrySet().stream().sorted(Map.Entry.comparingByKey((a, b) -> Integer.compare(a.partition(), b.partition()))).forEach(e ->
                     seeks.row(e.getKey().partition(), e.getValue(), firsts.get(e.getKey().partition()), e.getValue() - firsts.getOrDefault(e.getKey().partition(), e.getValue())));
-            seeks.print("3. ConsumerSeekAware.onPartitionsAssigned -> seekRelative(-100): %d records replayed, committed offsets ignored".formatted(probe.replayed()));
+            log.info("3. ConsumerSeekAware.onPartitionsAssigned -> seekRelative(-100): {} records replayed, committed offsets ignored\n{}", probe.replayed(), seeks);
 
             // ---- 4. filter + interceptor -----------------------------------------------------------------------
             support.start("acks-filter");
@@ -110,8 +115,8 @@ public class ListenerAcksDemo {
             filter.row("RecordInterceptor (global, before the listener)", interceptor.count("spring-acks-filter"), "saw every record of the poll");
             filter.row("RecordFilterStrategy oddOffsetFilter", interceptor.count("spring-acks-filter") - probe.count("acks-filter"), "discarded (odd offsets)");
             filter.row("listener method", probe.count("acks-filter"), "got the rest; offsets of discarded records are still committed with the batch");
-            filter.print("4. filter and interceptor on the acks-filter listener");
-            System.out.printf("   the interceptor also counted the other groups: %s%n", interceptor.counts());
+            log.info("4. filter and interceptor on the acks-filter listener\n{}", filter);
+            log.info("the interceptor also counted the other groups: {}", interceptor.counts());
         });
     }
 

@@ -12,7 +12,7 @@ import java.util.concurrent.locks.LockSupport;
 
 /**
  * Chapter 17's measurement and simulated work, called from the recipe listeners: every record costs {@code workMs}
- * of {@code LockSupport.parkNanos}, so the drain times the demo prints are decided by how many records are worked on
+ * of {@code LockSupport.parkNanos}, so the drain times the demo logs are decided by how many records are worked on
  * at the same time. Counts records, calls and threads per listener.
  */
 @Component

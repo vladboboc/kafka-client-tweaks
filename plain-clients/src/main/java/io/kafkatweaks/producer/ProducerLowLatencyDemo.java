@@ -13,6 +13,8 @@ import io.kafkatweaks.producer.recipe.ThroughputProducer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -37,6 +39,7 @@ import java.util.concurrent.locks.LockSupport;
  */
 public final class ProducerLowLatencyDemo implements Demo {
 
+    private static final Logger log = LoggerFactory.getLogger(ProducerLowLatencyDemo.class);
     private static final String TOPIC = "tweaks.latency";
 
     static final Map<String, Map<String, ?>> PRESETS = new LinkedHashMap<>();
@@ -60,29 +63,27 @@ public final class ProducerLowLatencyDemo implements Demo {
             topics.ensure(TOPIC, 3);
         }
 
-        System.out.println("1. sequential send().get(): each record pays the full round trip, plus linger.ms if the batch waits.\n");
+        log.info("1. sequential send().get(): each record pays the full round trip, plus linger.ms if the batch waits.");
         var sync = new Table("preset", "p50 ms", "p99 ms", "max ms");
         PRESETS.forEach((label, overrides) -> {
             long[] lat = sequential(props(args, "sync", overrides), syncRecords, size);
             sync.row(label, pct(lat, .5), pct(lat, .99), Workload.maxMs(lat));
         });
-        sync.print("ack latency, sequential sends (%d records)".formatted(syncRecords));
+        log.info("ack latency, sequential sends ({} records)\n{}", syncRecords, sync);
 
-        System.out.printf("%n2. paced async stream at %d records/s for %ds: latency each record sees vs. how well batches fill.%n%n", rate, seconds);
+        log.info("2. paced async stream at {} records/s for {}s: latency each record sees vs. how well batches fill.", rate, seconds);
         var paced = new Table("preset", "sent", "p50 ms", "p99 ms", "batch-size-avg", "records/request", "request-latency-avg", "queue-time-avg");
         PRESETS.forEach((label, overrides) -> paced.row(pacedRow(props(args, "paced", overrides), rate, seconds, size, label)));
-        paced.print("paced stream");
+        log.info("paced stream\n{}", paced);
 
-        System.out.println("""
-
+        log.info("""
                 reading it
                   linger.ms is a floor on latency only while batches are not filling up on their own: at low rates a
                   batch never reaches batch.size, so it waits the full linger before it goes.
                   acks=1 removes the replication round trip from the ack, at the durability price of chapter 03.
                   compression adds CPU time per batch; at a few hundred records/s it is noise, at a firehose it is not.
                   the lowest latency setup is linger.ms=0 + acks=all + idempotence: one record per request, still safe.
-                  request-latency-avg is the broker round trip and the part no producer setting can remove.
-                """);
+                  request-latency-avg is the broker round trip and the part no producer setting can remove.""");
     }
 
     private static long[] sequential(Properties props, int records, int size) {

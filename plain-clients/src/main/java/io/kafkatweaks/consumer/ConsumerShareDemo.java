@@ -18,6 +18,8 @@ import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicIdPartition;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.List;
@@ -49,6 +51,7 @@ import java.util.stream.Collectors;
  */
 public final class ConsumerShareDemo implements Demo {
 
+    private static final Logger log = LoggerFactory.getLogger(ConsumerShareDemo.class);
     private static final String TOPIC = "tweaks.queue";
     /** One partition, so that both consumers of the lock demo are necessarily assigned the same partition. */
     private static final String LOCK_TOPIC = "tweaks.queue-locks";
@@ -65,28 +68,26 @@ public final class ConsumerShareDemo implements Demo {
             configureGroup(topics, group);
         }
         var knobs = shareProps(args, group, "knobs");
-        Knobs.printConsumer(knobs, ConsumerConfig.SHARE_ACKNOWLEDGEMENT_MODE_CONFIG, ConsumerConfig.SHARE_ACQUIRE_MODE_CONFIG,
+        Knobs.logConsumer(knobs, ConsumerConfig.SHARE_ACKNOWLEDGEMENT_MODE_CONFIG, ConsumerConfig.SHARE_ACQUIRE_MODE_CONFIG,
                 ConsumerConfig.MAX_POLL_RECORDS_CONFIG);
-        System.out.println("""
-                  group-level configs (set with kafka-configs --entity-type groups, or Admin.incrementalAlterConfigs as here):
-                    share.auto.offset.reset          where a NEW share group starts: latest (default) or earliest
-                    share.record.lock.duration.ms    how long a delivered record stays locked to a consumer (default 30000)
-                    share.delivery.count.limit       deliveries before a record is archived (default 5)
-                    share.isolation.level            read_uncommitted (default) / read_committed
-                """);
+        log.info("""
+                group-level configs (set with kafka-configs --entity-type groups, or Admin.incrementalAlterConfigs as here):
+                  share.auto.offset.reset          where a NEW share group starts: latest (default) or earliest
+                  share.record.lock.duration.ms    how long a delivered record stays locked to a consumer (default 30000)
+                  share.delivery.count.limit       deliveries before a record is archived (default 5)
+                  share.isolation.level            read_uncommitted (default) / read_committed""");
 
         implicitAcks(args, group, records, consumers);
         explicitAcks(args, group + "-explicit", records);
         lockTimeout(args, group + "-locks");
-        System.out.println("""
-
+        log.info("""
+                consumer group or share group
                   consumer group: partition = unit of parallelism, offsets = the only state, in-order per partition,
                                   one member per partition, redelivery only by seeking.
                   share group:    record = unit of work, per-record ack + delivery count, any member gets any record,
                                   no ordering across members, built-in retry (RELEASE) and dead-lettering (REJECT).
                   use a share group when the work is independent per record and slow/uneven; keep a consumer group when
-                  order per key matters or when you need replay by offset.
-                """);
+                  order per key matters or when you need replay by offset.""");
     }
 
     private static void configureGroup(Topics topics, String group) {
@@ -97,20 +98,21 @@ public final class ConsumerShareDemo implements Demo {
             try {
                 ShareWorker.configureGroup(topics.admin(), g, ShareWorker.groupSettings(reset, Duration.ofSeconds(2), 3));
             } catch (ExecutionException e) {
-                System.out.println("could not set group configs for " + g + ": " + e.getCause());
+                log.warn("could not set group configs for {}: {}", g, String.valueOf(e.getCause()));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException(e);
             }
         }
-        System.out.printf("group configs set for %s*: share.auto.offset.reset=earliest (latest for the lock demo), share.record.lock.duration.ms=2000, share.delivery.count.limit=3%n", group);
+        log.info("group configs set for {}*: share.auto.offset.reset=earliest (latest for the lock demo), share.record.lock.duration.ms=2000, share.delivery.count.limit=3", group);
     }
 
     // ------------------------------------------------------------------ 1. implicit
 
     private static void implicitAcks(Args args, String group, int records, int consumers) throws Exception {
-        System.out.printf("%n1. %d share consumers on %d partitions, share.acknowledgement.mode=implicit (records are accepted%n"
-                + "   when the next poll() or commitSync() happens). All consumers get work; %d records total.%n%n", consumers, 3, records);
+        log.info("""
+                1. {} share consumers on {} partitions, share.acknowledgement.mode=implicit (records are accepted
+                   when the next poll() or commitSync() happens). All consumers get work; {} records total.""", consumers, 3, records);
         seed(TOPIC, records);
         var total = new AtomicInteger();
         var perConsumer = new ConcurrentHashMap<String, AtomicInteger>();
@@ -151,24 +153,21 @@ public final class ConsumerShareDemo implements Demo {
                 perConsumerPartitions.get(c).stream().map(String::valueOf).collect(Collectors.joining(","))));
         long dupes = seen.values().stream().filter(c -> c.get() > 1).count();
         table.row("total", total.get(), "distinct records %d, delivered more than once %d".formatted(seen.size(), dupes));
-        table.print("distribution");
-        System.out.println("""
-                  a 4th consumer in a consumer GROUP on 3 partitions would have received nothing.
+        log.info("distribution\n{}", table);
+        log.info("""
+                a 4th consumer in a consumer GROUP on 3 partitions would have received nothing.
                   note the assignment table: the share assignor spreads members over partitions so that every partition
-                  has at least one member and members share partitions; a member does NOT necessarily see every partition.
-                """);
+                  has at least one member and members share partitions; a member does NOT necessarily see every partition.""");
     }
 
     // ------------------------------------------------------------------ 2. explicit
 
     private static void explicitAcks(Args args, String group, int records) {
-        System.out.println("""
-
+        log.info("""
                 2. share.acknowledgement.mode=explicit: the application decides per record.
                      ACCEPT  done.                RELEASE  give it back, someone (maybe me) will get it again (delivery count +1).
                      REJECT  never again (poison). Records released too often hit share.delivery.count.limit and are archived.
-                   Here: every 50th key is poison -> REJECT; every 7th key fails on its FIRST delivery -> RELEASE, then ACCEPT.
-                """);
+                   Here: every 50th key is poison -> REJECT; every 7th key fails on its FIRST delivery -> RELEASE, then ACCEPT.""");
         var props = shareProps(args, group, "explicit");
         props.putAll(ShareWorker.explicitAcks());
         var accepted = new AtomicInteger();
@@ -196,28 +195,26 @@ public final class ConsumerShareDemo implements Demo {
                 }
                 accepted.incrementAndGet();
                 return AcknowledgeType.ACCEPT;
-            }, (tp, e) -> System.out.println("  commit error on " + tp + ": " + e));
+            }, (tp, e) -> log.warn("acks for {} not applied: {}", tp, e.toString()));
             int idle = 0;
             while (accepted.get() + rejected.get() < records && idle < 20) {
                 idle = worker.pollOnce(Duration.ofMillis(300)) == 0 ? idle + 1 : 0;
             }
         }
-        new Table("input records", "accepted", "released (retried)", "rejected (poison)", "records seen with deliveryCount > 1", "max deliveryCount")
-                .row(records, accepted.get(), released.get(), rejected.get(), redelivered.get(), maxDelivery.get())
-                .print("explicit acknowledgement");
-        System.out.println("  accepted + rejected = input: every record ended in exactly one final state; released ones came back and were accepted.");
+        var outcome = new Table("input records", "accepted", "released (retried)", "rejected (poison)", "records seen with deliveryCount > 1", "max deliveryCount")
+                .row(records, accepted.get(), released.get(), rejected.get(), redelivered.get(), maxDelivery.get());
+        log.info("explicit acknowledgement\n{}", outcome);
+        log.info("accepted + rejected = input: every record ended in exactly one final state; released ones came back and were accepted.");
     }
 
     // ------------------------------------------------------------------ 3. locks
 
     private static void lockTimeout(Args args, String group) throws Exception {
-        System.out.println("""
-
+        log.info("""
                 3. acquisition locks. A delivered record is locked to its consumer for share.record.lock.duration.ms (2 s here).
                    Consumer A polls, then goes silent (no ack, no poll). Consumer B polls: after the lock expires it receives A's
                    records with deliveryCount=2. A's late acknowledgement is then refused.
-                   (on a 1-partition topic, so that A and B are guaranteed to share the partition)
-                """);
+                   (on a 1-partition topic, so that A and B are guaranteed to share the partition)""");
         var propsA = shareProps(args, group, "A");
         propsA.put(ConsumerConfig.SHARE_ACKNOWLEDGEMENT_MODE_CONFIG, "explicit");
         propsA.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "50");
@@ -240,7 +237,7 @@ public final class ConsumerShareDemo implements Demo {
             }
             var heldIds = new TreeSet<String>();
             held.forEach(r -> heldIds.add(r.partition() + "-" + r.offset()));
-            System.out.printf("A acquired %d records and stops responding for 3 s...%n", held.size());
+            log.info("A acquired {} records and stops responding for 3 s...", held.size());
             Thread.sleep(3000);
 
             b.subscribe(List.of(LOCK_TOPIC));
@@ -259,22 +256,21 @@ public final class ConsumerShareDemo implements Demo {
                 }
                 b.commitSync();
             }
-            System.out.printf("B received %d of A's records again (deliveryCount 2) plus %d fresh ones%n", reacquired, firstDeliveries);
+            log.info("B received {} of A's records again (deliveryCount 2) plus {} fresh ones", reacquired, firstDeliveries);
 
             held.forEach(r -> a.acknowledge(r, AcknowledgeType.ACCEPT));
             Map<TopicIdPartition, Optional<KafkaException>> late = a.commitSync();
             if (late.isEmpty()) {
-                System.out.println("A's late acknowledgement: nothing to send, the client had already dropped the expired acquisitions");
+                log.info("A's late acknowledgement: nothing to send, the client had already dropped the expired acquisitions");
             }
-            late.forEach((tp, err) -> System.out.printf("A's late acknowledgement for %s: %s%n", tp,
+            late.forEach((tp, err) -> log.info("A's late acknowledgement for {}: {}", tp,
                     err.map(e -> "refused with " + e.getClass().getSimpleName() + " (" + e.getMessage() + ")")
                        .orElse("no error reported; the records' final state had already been set by B, A's ack changed nothing")));
         }
-        System.out.println("""
-                  the lock is the queue's liveness guarantee: a crashed or stuck consumer cannot hold records hostage.
+        log.info("""
+                the lock is the queue's liveness guarantee: a crashed or stuck consumer cannot hold records hostage.
                   size share.record.lock.duration.ms above your slowest honest processing time, or RENEW the lock
-                  (AcknowledgeType.RENEW, KIP-1222) from long-running handlers.
-                """);
+                  (AcknowledgeType.RENEW, KIP-1222) from long-running handlers.""");
     }
 
     // ------------------------------------------------------------------ helpers
@@ -286,7 +282,7 @@ public final class ConsumerShareDemo implements Demo {
             }
             producer.flush();
         }
-        System.out.printf("seeded %d records into %s%n", records, topic);
+        log.info("seeded {} records into {}", records, topic);
     }
 
     /** Whether the share group currently lists a member with this client id (i.e. the join completed). */
@@ -304,7 +300,7 @@ public final class ConsumerShareDemo implements Demo {
         var table = new Table("member (client.id)", "assigned partitions");
         d.members().forEach(m -> table.row(m.clientId(), m.assignment().topicPartitions().stream()
                 .map(tp -> String.valueOf(tp.partition())).sorted().collect(Collectors.joining(","))));
-        table.print("share group %s: state %s".formatted(group, d.groupState()));
+        log.info("share group {}: state {}\n{}", group, d.groupState(), table);
     }
 
     private static Properties shareProps(Args args, String group, String clientId) {

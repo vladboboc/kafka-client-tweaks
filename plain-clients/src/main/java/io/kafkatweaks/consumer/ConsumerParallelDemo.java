@@ -14,6 +14,8 @@ import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -43,6 +45,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class ConsumerParallelDemo implements Demo {
 
+    private static final Logger log = LoggerFactory.getLogger(ConsumerParallelDemo.class);
     private static final String TOPIC = "tweaks.parallel";
     private static final int PARTITIONS = 6;
 
@@ -56,8 +59,8 @@ public final class ConsumerParallelDemo implements Demo {
             topics.recreate(TOPIC, PARTITIONS);
             Seed.ensure(topics, TOPIC, PARTITIONS, records, 200);
         }
-        System.out.printf("%d records, %d ms of work each = %.1f s of pure processing. Partitions: %d.%n%n",
-                records, workMs, records * workMs / 1000d, PARTITIONS);
+        log.info("{} records, {} ms of work each = {} s of pure processing. Partitions: {}.",
+                records, workMs, "%.1f".formatted(records * workMs / 1000d), PARTITIONS);
 
         var table = new Table("mode", "consumers", "workers", "elapsed s", "records/s", "ordering", "commit safety");
         if (modes.contains("1")) {
@@ -75,9 +78,9 @@ public final class ConsumerParallelDemo implements Demo {
         if (modes.contains("5")) {
             table.row(asyncPipeline(args, records, workMs));
         }
-        table.print("results");
-        System.out.println("""
-
+        log.info("results\n{}", table);
+        log.info("""
+                reading it
                   the unit of parallelism in a consumer GROUP is the partition: more consumers than partitions sit idle.
                   inside one consumer you may go further, as long as you respect two rules:
                     1. call poll() regularly (max.poll.interval.ms) -> hand work to other threads, do not do it inline
@@ -85,8 +88,7 @@ public final class ConsumerParallelDemo implements Demo {
                   per-partition workers keep Kafka's ordering guarantee; per-record fan-out (mode 4) throws it away,
                   which is fine for idempotent, independent records and wrong for anything keyed.
                   virtual threads (Java 21+) make "one worker per partition" or "one task per record" cost nothing to create;
-                  the bottleneck moves to whatever the handler talks to.
-                """);
+                  the bottleneck moves to whatever the handler talks to.""");
     }
 
     // ------------------------------------------------------------------ 1

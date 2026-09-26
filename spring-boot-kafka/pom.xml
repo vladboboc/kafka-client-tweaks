@@ -83,13 +83,17 @@
             <!-- Every demo is launched the same way (the first argument is the demo, the rest are its key=value knobs):
                      ./mvnw -q -pl spring-boot-kafka -am compile spring-boot:run -Dspring-boot.run.arguments="<demo> [key=value ...]"
                  repackage also produces an executable jar:
-                     java -jar spring-boot-kafka/target/spring-boot-kafka-1.0-SNAPSHOT.jar <demo> [key=value ...] -->
+                     java -jar spring-boot-kafka/target/spring-boot-kafka-1.0-SNAPSHOT.jar <demo> [key=value ...]
+                 jvmArguments: the zstd, lz4 and snappy codecs load native code, and JDK 24+ prints a "restricted method
+                 ... System::load" warning for that unless native access is enabled (JEP 472). spring-boot:run forks a JVM of
+                 its own, which gets nothing of Maven's (the Maven launcher already grants it to exec:java in part 1). -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
                     <skip>false</skip>
                     <mainClass>io.kafkatweaks.spring.SpringTweaksApplication</mainClass>
+                    <jvmArguments>--enable-native-access=ALL-UNNAMED</jvmArguments>
                 </configuration>
                 <executions>
                     <execution>
@@ -98,6 +102,20 @@
                         </goals>
                     </execution>
                 </executions>
+            </plugin>
+
+            <!-- The same permission for java -jar: Enable-Native-Access: ALL-UNNAMED is the manifest form of
+                 the flag. repackage keeps the entries of the plain jar's manifest when it writes the executable one. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <configuration>
+                    <archive>
+                        <manifestEntries>
+                            <Enable-Native-Access>ALL-UNNAMED</Enable-Native-Access>
+                        </manifestEntries>
+                    </archive>
+                </configuration>
             </plugin>
 
             <plugin>

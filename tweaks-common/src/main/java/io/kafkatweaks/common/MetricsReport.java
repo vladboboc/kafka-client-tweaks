@@ -2,13 +2,15 @@ package io.kafkatweaks.common;
 
 import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Reads the client's own metrics ({@code producer.metrics()} / {@code consumer.metrics()}) and prints
+ * Reads the client's own metrics ({@code producer.metrics()} / {@code consumer.metrics()}) and logs
  * the handful that matter for a given chapter. This is the same data JMX exposes, without the plumbing.
  * <p>
  * Kafka registers most metrics twice: once aggregated per client (tags = {client-id}) and again per
@@ -38,6 +40,8 @@ public final class MetricsReport {
     public static final String SHARE_CONSUMER_COORDINATOR = "consumer-share-coordinator-metrics";
     public static final String SHARE_CONSUMER = "consumer-share-metrics";
 
+    private static final Logger log = LoggerFactory.getLogger(MetricsReport.class);
+
     private MetricsReport() {
     }
 
@@ -61,20 +65,20 @@ public final class MetricsReport {
         return out;
     }
 
-    /** Prints a two-column table (metric, value) for the given aggregate metrics. */
-    public static void print(String title, Map<MetricName, ? extends Metric> metrics, String group, String... names) {
+    /** Logs a two-column table (metric, value) for the given aggregate metrics. */
+    public static void logMetrics(String title, Map<MetricName, ? extends Metric> metrics, String group, String... names) {
         var table = new Table("metric (" + group + ")", "value");
         for (String n : names) {
             table.row(n, value(metrics, group, n));
         }
-        table.print(title);
+        log.info("{}\n{}", title, table);
     }
 
     /**
-     * Prints a comparison: one row per configuration, one column per metric. The first column is the
+     * Logs a comparison: one row per configuration, one column per metric. The first column is the
      * label of the run. Used by the chapters that run the same workload under several configs.
      */
-    public static void printComparison(String title, List<String> metricNames, Map<String, Map<String, Double>> runs) {
+    public static void logComparison(String title, List<String> metricNames, Map<String, Map<String, Double>> runs) {
         var header = new String[metricNames.size() + 1];
         header[0] = "run";
         for (int i = 0; i < metricNames.size(); i++) {
@@ -89,7 +93,7 @@ public final class MetricsReport {
             }
             table.row(cells);
         });
-        table.print(title);
+        log.info("{}\n{}", title, table);
     }
 
     private static boolean isAggregate(MetricName mn) {

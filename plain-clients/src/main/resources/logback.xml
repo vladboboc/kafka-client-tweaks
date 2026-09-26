@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Demos print their own tables to stdout. Kafka's INFO logging (full config dumps on every client
-     creation, metadata updates, group coordinator chatter) would bury them, so it is kept at WARN.
-     Turn it up when you want to see what the client is doing:  -Dkafka.log=INFO  -->
+<!-- The demos log everything they report (tables, findings, warnings) through SLF4J, and Logback writes it to the
+     console: the same pair a Spring Boot application uses by default, with the same pattern as the Spring module
+     (logging.pattern.console in its application.yml). A table is logged as one multi-line message, so only its title
+     line carries the time / level / logger prefix and the columns stay aligned.
+     Kafka's INFO logging (full config dumps on every client creation, metadata updates, group coordinator chatter)
+     would bury the tables, so it is kept at WARN. Turn it up when you want to see what the client is doing:  -Dkafka.log=INFO  -->
 <configuration>
-    <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
-        <target>System.err</target>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
             <pattern>%d{HH:mm:ss.SSS} %-5level %logger{0} - %msg%n</pattern>
         </encoder>
@@ -15,6 +17,6 @@
     <logger name="io.kafkatweaks" level="INFO"/>
 
     <root level="WARN">
-        <appender-ref ref="STDERR"/>
+        <appender-ref ref="CONSOLE"/>
     </root>
 </configuration>

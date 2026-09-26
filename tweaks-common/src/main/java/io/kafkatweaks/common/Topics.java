@@ -15,6 +15,8 @@ import org.apache.kafka.common.errors.GroupIdNotFoundException;
 import org.apache.kafka.common.errors.GroupNotEmptyException;
 import org.apache.kafka.common.errors.TopicExistsException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -36,6 +38,7 @@ import java.util.stream.Collectors;
  */
 public final class Topics implements AutoCloseable {
 
+    private static final Logger log = LoggerFactory.getLogger(Topics.class);
     private static final Duration DELETE_WAIT = Duration.ofSeconds(30);
     /** How long a topic that must exist may stay unknown to the broker a describe lands on (see describeExisting). */
     private static final Duration METADATA_LAG = Duration.ofSeconds(10);
@@ -58,7 +61,7 @@ public final class Topics implements AutoCloseable {
     public void ensure(String topic, int partitions, int replicationFactor, Map<String, String> configs) {
         try {
             admin.createTopics(List.of(new NewTopic(topic, partitions, (short) replicationFactor).configs(configs))).all().get();
-            System.out.printf("topic %s created (%d partitions, RF=%d%s)%n", topic, partitions, replicationFactor, describeConfigs(configs));
+            log.info("topic {} created ({} partitions, RF={}{})", topic, partitions, replicationFactor, describeConfigs(configs));
             // createTopics() returns when the controller has accepted the topic; the brokers' metadata catches up a
             // moment later. Anything that describes or writes the topic right away would see UNKNOWN_TOPIC_OR_PARTITION.
             // This loop only proves it for the broker that answered; describeExisting() covers a later read that
@@ -170,14 +173,14 @@ public final class Topics implements AutoCloseable {
         while (true) {
             try {
                 admin.deleteConsumerGroups(List.of(groupId)).all().get();
-                System.out.printf("consumer group %s deleted%n", groupId);
+                log.info("consumer group {} deleted", groupId);
                 return;
             } catch (ExecutionException e) {
                 if (e.getCause() instanceof GroupIdNotFoundException) {
                     return;
                 }
                 if (e.getCause() instanceof GroupNotEmptyException && System.nanoTime() < deadline) {
-                    System.out.printf("consumer group %s still has members (a previous run did not leave cleanly); waiting for the session timeout...%n", groupId);
+                    log.warn("consumer group {} still has members (a previous run did not leave cleanly); waiting for the session timeout...", groupId);
                     sleep(3000);
                     continue;
                 }
@@ -198,14 +201,14 @@ public final class Topics implements AutoCloseable {
         while (true) {
             try {
                 admin.deleteShareGroups(List.of(groupId)).all().get();
-                System.out.printf("share group %s deleted%n", groupId);
+                log.info("share group {} deleted", groupId);
                 return;
             } catch (ExecutionException e) {
                 if (e.getCause() instanceof GroupIdNotFoundException) {
                     return;
                 }
                 if (e.getCause() instanceof GroupNotEmptyException && System.nanoTime() < deadline) {
-                    System.out.printf("share group %s still has members (a previous run did not leave cleanly); waiting for the session timeout...%n", groupId);
+                    log.warn("share group {} still has members (a previous run did not leave cleanly); waiting for the session timeout...", groupId);
                     sleep(3000);
                     continue;
                 }
@@ -301,8 +304,8 @@ public final class Topics implements AutoCloseable {
         }
     }
 
-    /** Prints partition → leader / replicas / ISR, the view the durability chapter reasons about. */
-    public void printPartitions(String topic) {
+    /** Logs partition → leader / replicas / ISR, the view the durability chapter reasons about. */
+    public void logPartitions(String topic) {
         TopicDescription d = describeExisting(topic);
         var table = new Table("partition", "leader", "replicas", "in-sync replicas");
         d.partitions().forEach(p -> table.row(
@@ -310,17 +313,17 @@ public final class Topics implements AutoCloseable {
                 p.leader() == null ? "none" : "broker " + p.leader().id(),
                 ids(p.replicas().stream().map(n -> n.id()).toList()),
                 ids(p.isr().stream().map(n -> n.id()).toList())));
-        table.print("topic " + topic);
+        log.info("topic {}\n{}", topic, table);
     }
 
-    public void printAssignments(String groupId) {
+    public void logAssignments(String groupId) {
         var table = new Table("member (client.id)", "partitions");
         assignments(groupId).forEach((client, tps) -> table.row(client,
                 tps.stream().map(tp -> String.valueOf(tp.partition())).collect(Collectors.joining(","))));
-        table.print("assignments of group " + groupId);
+        log.info("assignments of group {}\n{}", groupId, table);
     }
 
-    public void printLag(String groupId) {
+    public void logLag(String groupId) {
         var table = new Table("partition", "lag");
         long total = 0;
         for (var e : lag(groupId).entrySet()) {
@@ -328,7 +331,7 @@ public final class Topics implements AutoCloseable {
             total += e.getValue();
         }
         table.row("total", total);
-        table.print("lag of group " + groupId);
+        log.info("lag of group {}\n{}", groupId, table);
     }
 
     private static String ids(List<Integer> ids) {

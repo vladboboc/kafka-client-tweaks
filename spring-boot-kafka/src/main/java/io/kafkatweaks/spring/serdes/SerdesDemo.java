@@ -18,6 +18,8 @@ import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.context.annotation.Bean;
@@ -51,6 +53,8 @@ import java.util.stream.Collectors;
 @Configuration(proxyBeanMethods = false)
 @Profile("spring-serdes")
 public class SerdesDemo {
+
+    private static final Logger log = LoggerFactory.getLogger(SerdesDemo.class);
 
     private record Raw(String headers, int valueBytes, String value) {
     }
@@ -87,8 +91,8 @@ public class SerdesDemo {
                 }
             }
             Raw raw = peek(TopicsConfig.SERDES);
-            System.out.printf("1. %d io.kafkatweaks.common.Order records sent through the auto-configured KafkaTemplate (value-serializer: JacksonJsonSerializer)%n", records);
-            System.out.printf("   the first record on the wire: headers [%s], value %d bytes:%n   %s%n%n", raw.headers(), raw.valueBytes(), raw.value());
+            log.info("1. {} io.kafkatweaks.common.Order records sent through the auto-configured KafkaTemplate (value-serializer: JacksonJsonSerializer)", records);
+            log.info("the first record on the wire: headers [{}], value {} bytes:\n   {}", raw.headers(), raw.valueBytes(), raw.value());
 
             // ---- 2. JSON in, four ways -------------------------------------------------------------------------------------
             List<String> jsonListeners = List.of("serdes-json", "serdes-view", "serdes-mapped", "serdes-converter");
@@ -102,18 +106,18 @@ public class SerdesDemo {
             row(in, probe, "serdes-view", "spring.json.use.type.headers=false + value.default.type (per-listener properties)");
             row(in, probe, "serdes-mapped", "spring.json.type.mapping=order:OrderView (per-listener properties)");
             row(in, probe, "serdes-converter", "StringDeserializer + JacksonJsonMessageConverter: the method parameter's type");
-            in.print("2. the same %d records read by four listeners".formatted(records));
+            log.info("2. the same {} records read by four listeners\n{}", records, in);
 
             // ---- 3. Avro out: a second producer factory, failure first --------------------------------------------------
             var avroFactory = SerdesConfig.avroProducerFactory(properties, "spring-serdes-avro");   // <- the recipe under test
             var avroTemplate = new KafkaTemplate<>(avroFactory);
-            System.out.printf("%n3. Avro: KafkaTemplate over a DefaultKafkaProducerFactory built from spring.kafka.producer.* with value.serializer=KafkaAvroSerializer%n");
+            log.info("3. Avro: KafkaTemplate over a DefaultKafkaProducerFactory built from spring.kafka.producer.* with value.serializer=KafkaAvroSerializer");
             try {
                 avroTemplate.send(TopicsConfig.AVRO, "ORD-0", avroOrder(0)).get();
-                System.out.println("   unexpected: the untrusted generated class serialized fine");
+                log.warn("unexpected: the untrusted generated class serialized fine");
             } catch (Exception e) {
                 Throwable root = rootCause(e);
-                System.out.printf("   FAILED before AvroTrust: %s: %s%n", root.getClass().getSimpleName(), firstLine(root.getMessage()));
+                log.info("FAILED before AvroTrust: {}: {}", root.getClass().getSimpleName(), firstLine(root.getMessage()));
             }
             avroFactory.reset();   // drop the producer whose first send failed
             AvroTrust.trustGeneratedClasses();
@@ -131,7 +135,7 @@ public class SerdesDemo {
                 }
             }
             SchemaMetadata latest = registry.getLatestSchemaMetadata(avroSubject);
-            System.out.printf("   after AvroTrust.trustGeneratedClasses(): %d records sent; registered subject %s, schema id %d, version %d%n",
+            log.info("after AvroTrust.trustGeneratedClasses(): {} records sent; registered subject {}, schema id {}, version {}",
                     records, avroSubject, latest.getId(), latest.getVersion());
 
             // ---- 4. Avro in ------------------------------------------------------------------------------------------------------
@@ -140,15 +144,16 @@ public class SerdesDemo {
             support.stop("serdes-avro");
             var avroIn = new Table("listener", "how the value type is decided", "value class in the listener", "__TypeId__ header", "first value");
             row(avroIn, probe, "serdes-avro", "KafkaAvroDeserializer + specific.avro.reader=true: schema id -> registry -> generated class");
-            avroIn.print("4. avroContainerFactory: a DefaultKafkaConsumerFactory with the Confluent deserializer, spring.kafka.listener.* still applied by Boot's configurer");
+            log.info("4. avroContainerFactory: a DefaultKafkaConsumerFactory with the Confluent deserializer, spring.kafka.listener.* still applied by Boot's configurer\n{}", avroIn);
 
-            new Table("format", "value bytes/record", "header bytes/record", "what is on the wire")
+            var wire = new Table("format", "value bytes/record", "header bytes/record", "what is on the wire")
                     .row("JSON (JacksonJsonSerializer)", "%.1f".formatted((double) jsonValueBytes / records), "%.1f".formatted((double) jsonHeaderBytes / records),
                             "field names + values as text; __TypeId__ header with the mapped token")
                     .row("Confluent Avro (KafkaAvroSerializer)", "%.1f".formatted((double) avroValueBytes / records), "%.1f".formatted((double) avroHeaderBytes / records),
-                            "magic byte 0x00 + 4-byte schema id + Avro binary, no field names, no headers")
-                    .print("wire size, the same order data");
-            System.out.println("subjects in the registry for spring.* topics: " + registry.getAllSubjects().stream().filter(s -> s.startsWith("spring.")).sorted().collect(Collectors.joining(", ")));
+                            "magic byte 0x00 + 4-byte schema id + Avro binary, no field names, no headers");
+            log.info("wire size, the same order data\n{}", wire);
+            log.info("subjects in the registry for spring.* topics: {}",
+                    registry.getAllSubjects().stream().filter(s -> s.startsWith("spring.")).sorted().collect(Collectors.joining(", ")));
             avroFactory.destroy();
         });
     }

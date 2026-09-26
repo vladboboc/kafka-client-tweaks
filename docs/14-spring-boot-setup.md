@@ -137,7 +137,7 @@ private static NewTopic topic(String name, int partitions) {
 ```
 
 - **A typed key where Boot has one** (`batch-size: 64KB`, `fetch-max-wait: 250ms`), **`properties["[...]"]` for
-  everything else** (`linger.ms`, `group.protocol`). The demo prints what each one became in the real client config.
+  everything else** (`linger.ms`, `group.protocol`). The demo logs what each one became in the real client config.
 - **`spring.kafka.properties`** reaches producer, consumer and admin at once; `spring.kafka.producer.properties`
   only the producer.
 - **`KafkaAdmin.NewTopics`**: `KafkaAdmin` creates missing topics at startup and never lowers a partition count.
@@ -150,7 +150,9 @@ private static NewTopic topic(String name, int partitions) {
 
 Same shape for every Spring demo: the first argument is the demo (it is also the active profile, so
 `application-spring-setup.yml` is loaded), the rest are `key=value` knobs, and `--spring.…` options may be added
-anywhere. Without arguments the command lists the demos. `java -jar spring-boot-kafka/target/spring-boot-kafka-1.0-SNAPSHOT.jar spring-setup`
+anywhere. Without arguments (or with an unknown demo name) the application starts with the `catalogue` profile and
+lists the demos; [application-catalogue.yml](../spring-boot-kafka/src/main/resources/application-catalogue.yml) turns
+`KafkaAdmin`'s topic creation off for it, so the list needs no broker. `java -jar spring-boot-kafka/target/spring-boot-kafka-1.0-SNAPSHOT.jar spring-setup`
 does the same after `./mvnw -q package`.
 
 ## What you should see
@@ -190,7 +192,7 @@ the common `properties[...]` reached all three, the producer-only one reached th
 | consumer.properties[group.protocol]: consumer                   | group.protocol      |                                                 | consumer                                        |                                                 |
 ```
 
-The same `Knobs` printer the plain chapters use, fed with the factory's configuration (`acks=all` is stored as `-1`):
+The same `Knobs` table the plain chapters use, fed with the factory's configuration (`acks=all` is stored as `-1`):
 
 ```
 | config                                | this run | client default    |
@@ -223,7 +225,7 @@ Then the topics `KafkaAdmin` created (3 and 6 partitions, replicas `1,2,3`, all 
 
 - **The factory map is the truth.** `ProducerFactory.getConfigurationProperties()` and
   `ConsumerFactory.getConfigurationProperties()` are exactly what `new KafkaProducer(...)` / `new KafkaConsumer(...)`
-  receive. When a property "does not work", print these first; the usual causes are a typo in the escape hatch
+  receive. When a property "does not work", log these first; the usual causes are a typo in the escape hatch
   (Boot cannot validate `properties[...]` keys) or a typed key set in one profile and its `properties[...]` twin
   in another.
 - **`enable.auto.commit` shows `true` and means nothing.** The listener container sets it to `false` on the

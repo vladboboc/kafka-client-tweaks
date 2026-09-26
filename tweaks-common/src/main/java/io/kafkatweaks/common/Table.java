@@ -5,8 +5,15 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Minimal fixed-width table printer. Numbers are right-aligned and humanised
+ * Minimal fixed-width table. Numbers are right-aligned and humanised
  * ({@code 1234567 -> 1.23M}), everything else is left-aligned.
+ * <p>
+ * {@link #toString()} renders it, so a table is logged as the argument of one message:
+ * <pre>{@code
+ * log.info("catch-up throughput\n{}", table);
+ * }</pre>
+ * Only the first line of a log message carries the time / level / logger prefix, so the rows under the title stay
+ * aligned, and the table is only rendered if the message is actually logged.
  */
 public final class Table {
 
@@ -29,15 +36,9 @@ public final class Table {
         return this;
     }
 
-    public void print() {
-        print("");
-    }
-
-    public void print(String title) {
-        var sb = new StringBuilder();
-        if (!title.isBlank()) {
-            sb.append('\n').append(title).append('\n');
-        }
+    /** The header, a separator and the rows, one line each, without a trailing line break (the log pattern adds one). */
+    @Override
+    public String toString() {
         int[] widths = new int[header.length];
         for (int i = 0; i < header.length; i++) {
             widths[i] = header[i].length();
@@ -45,23 +46,24 @@ public final class Table {
                 widths[i] = Math.max(widths[i], row[i].length());
             }
         }
+        var sb = new StringBuilder();
         sb.append(line(header, widths, true));
         sb.append(separator(widths));
         for (var row : rows) {
             sb.append(line(row, widths, false));
         }
-        System.out.print(sb);
-        System.out.flush();
+        sb.setLength(sb.length() - 1);
+        return sb.toString();
     }
 
     private static String line(String[] cells, int[] widths, boolean isHeader) {
-        var sb = new StringBuilder("| ");
+        var sb = new StringBuilder("|");
         for (int i = 0; i < cells.length; i++) {
             boolean numeric = !isHeader && isNumeric(cells[i]);
             String cell = numeric
                     ? " ".repeat(widths[i] - cells[i].length()) + cells[i]
                     : cells[i] + " ".repeat(widths[i] - cells[i].length());
-            sb.append(cell).append(" | ");
+            sb.append(' ').append(cell).append(" |");
         }
         return sb.append('\n').toString();
     }

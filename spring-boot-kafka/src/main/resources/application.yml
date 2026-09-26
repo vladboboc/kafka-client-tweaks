@@ -21,7 +21,12 @@ spring:
       fail-fast: true
       operation-timeout: 10s
 
+# Boot's default logging: SLF4J + Logback with Boot's own console appender, no logback-spring.xml needed. The demos
+# log their tables and findings through it; a table is one multi-line message, so its rows stay aligned under the title
+# line. The pattern is shorter than Boot's (no date, PID, thread) and the same as the plain module's logback.xml.
 logging:
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level %logger{0} - %msg%n"
   level:
     root: WARN
     io.kafkatweaks: INFO

@@ -17,24 +17,17 @@ import java.util.List;
  * </pre>
  * The remaining {@code key=value} arguments are the demo's own knobs ({@link io.kafkatweaks.common.Args}). Boot-style
  * {@code --spring.kafka.producer.properties.linger.ms=50} options are ordinary Spring properties and can be added
- * anywhere on the line: that is the Spring way of tweaking a client without touching YAML.
+ * anywhere on the line: that is the Spring way of tweaking a client without touching YAML. Without a known demo name
+ * the application runs with the {@link Catalogue#PROFILE catalogue} profile, which lists the demos.
  */
 @SpringBootApplication
 public class SpringTweaksApplication {
 
     public static void main(String[] args) {
         List<String> plain = new DefaultApplicationArguments(args).getNonOptionArgs();
-        if (plain.isEmpty()) {
-            Catalogue.print();
-            System.exit(0);
-        }
-        if (Catalogue.find(plain.getFirst()).isEmpty()) {
-            System.err.printf("unknown demo: %s%n%n", plain.getFirst());
-            Catalogue.print();
-            System.exit(2);
-        }
+        String profile = plain.isEmpty() || Catalogue.find(plain.getFirst()).isEmpty() ? Catalogue.PROFILE : plain.getFirst();
         ConfigurableApplicationContext context = new SpringApplicationBuilder(SpringTweaksApplication.class)
-                .profiles(plain.getFirst())
+                .profiles(profile)
                 .run(args);
         // The demo body ran as an ApplicationRunner inside run(). Closing the context stops the listener containers
         // and closes the producers; the exit code is whatever the demo left behind.

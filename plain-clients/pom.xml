@@ -16,7 +16,8 @@
 
     <dependencies>
         <!-- The shared helpers (Env, Topics, Table, MetricsReport, Knobs, Seed, Workload, JsonSerde, the generated Avro
-             Order class and AvroTrust) and, through them, kafka-clients ${kafka.version} with its compression codecs. -->
+             Order class and AvroTrust) and, through them, kafka-clients ${kafka.version} with its compression codecs and
+             the SLF4J API the demos log with. -->
         <dependency>
             <groupId>io.kafkatweaks</groupId>
             <artifactId>tweaks-common</artifactId>
@@ -30,6 +31,8 @@
             <version>${confluent.version}</version>
         </dependency>
 
+        <!-- The logging backend behind SLF4J, the one Spring Boot uses by default: it writes the demos' output and Kafka's
+             own logging (src/main/resources/logback.xml). Runtime scope: the code only ever sees the SLF4J API. -->
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>

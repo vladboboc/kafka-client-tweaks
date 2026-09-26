@@ -2,7 +2,7 @@
 
 A hands-on guide to tuning Apache Kafka **producers and consumers** for what you actually need:
 throughput, latency, durability, ordering, exactly-once, queue semantics. Every chapter is a short
-write-up plus a runnable demo that prints the client metrics the tweak affects, so you see the effect
+write-up plus a runnable demo that logs the client metrics the tweak affects, so you see the effect
 instead of taking it on faith.
 
 Part 1 (`plain-clients`, chapters 01–13) uses the plain `org.apache.kafka:kafka-clients` library, because
@@ -171,12 +171,22 @@ Presets in one demo run sequentially, so later presets enjoy a warm JIT; each de
 
 **Rate metrics lie in short runs.** Kafka's `*-rate` metrics divide by a window of at least 30 s
 (`metrics.sample.window.ms × (metrics.num.samples − 1)`), so a 3 s run under-reports by 10×. The demos
-therefore print their own elapsed-time throughput next to the metrics, and `*-total` counters where exact
+therefore log their own elapsed-time throughput next to the metrics, and `*-total` counters where exact
 counts matter.
 
-**Kafka client logging is at WARN.** Config dumps and coordinator chatter would bury the tables. The
-warnings you do see (deprecated `classic` protocol, `NOT_ENOUGH_REPLICAS` retries, a poll timeout) are part of
-the lesson. `-Dkafka.log=INFO` (plain) or `KAFKA_LOG=INFO` (Spring) turns everything on.
+**Everything is logged; Kafka's own logging is at WARN.** Both modules report through SLF4J and Logback, the pair
+Spring Boot uses by default (`logback.xml` in `plain-clients`, `logging.*` in the Spring module's `application.yml`,
+one pattern for both), so the demos' tables and the clients' warnings arrive in one stream. Config dumps and
+coordinator chatter would bury the tables, so the Kafka loggers stay at WARN; the warnings you do see (deprecated
+`classic` protocol, `NOT_ENOUGH_REPLICAS` retries, a poll timeout) are part of the lesson. `-Dkafka.log=INFO`
+(plain) or `KAFKA_LOG=INFO` (Spring) turns everything on.
+
+**Native codecs need native access on JDK 24+.** zstd, lz4 and snappy load native code, and since JDK 24 the JVM
+prints a `restricted method ... System::load` warning for that unless native access is enabled (JEP 472). Every
+documented command enables it: the Maven 3.9.16 launcher behind `./mvnw` does so for `exec:java` (part 1 runs in
+Maven's JVM), and the Spring module's `pom.xml` passes `--enable-native-access=ALL-UNNAMED` to the JVM that
+`spring-boot:run` forks and writes `Enable-Native-Access: ALL-UNNAMED` into the executable jar's manifest. When you
+run a main class from an IDE, add the flag to the run configuration's VM options.
 
 **`kafka-clients` 4.3 still defaults `group.protocol` to `classic`.** KIP-1274 deprecates it and the client
 logs a warning; the KIP-848 `consumer` protocol is opt-in (`group.protocol=consumer`) until a later release

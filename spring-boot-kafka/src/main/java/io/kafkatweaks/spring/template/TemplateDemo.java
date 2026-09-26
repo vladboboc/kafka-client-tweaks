@@ -14,6 +14,8 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -48,6 +50,8 @@ import java.util.concurrent.TimeUnit;
 @Profile("spring-template")
 public class TemplateDemo {
 
+    private static final Logger log = LoggerFactory.getLogger(TemplateDemo.class);
+
     @Bean
     ApplicationRunner springTemplate(DemoSupport support, KafkaTemplate<String, String> template,
                                      ProducerFactory<String, String> producerFactory, CountingProducerListener listener,
@@ -79,11 +83,11 @@ public class TemplateDemo {
             SendPatterns.sendAllAndWait(template, batch);
             double asyncMs = sw.elapsedMillis();
             modes.row("send() x N, then allOf().join()", sync, "%.0f".formatted(asyncMs), "%.0f".formatted(sync / asyncMs * 1000), "batches form; whenComplete() for per-record results");
-            modes.print("1. the same %d records through the auto-configured template".formatted(sync));
-            System.out.println("   send() is always asynchronous. .get() is the application choosing to wait; the plain chapter-01 numbers apply.");
+            log.info("1. the same {} records through the auto-configured template\n{}", sync, modes);
+            log.info("send() is always asynchronous. .get() is the application choosing to wait; the plain chapter-01 numbers apply.");
 
             // ---- 2. ProducerListener -----------------------------------------------------------------------
-            System.out.printf("%n2. ProducerListener bean: onSuccess=%d onError=%d (every send of the template above, no code at the call sites)%n",
+            log.info("2. ProducerListener bean: onSuccess={} onError={} (every send of the template above, no code at the call sites)",
                     listener.successes(), listener.failures());
 
             // ---- 3. several templates from one factory ------------------------------------------------------
@@ -107,8 +111,8 @@ public class TemplateDemo {
                     tuned.destroy();   // closes the producer of the copied factory
                 }
             }
-            System.out.printf("%n3. the chapter-02 matrix through KafkaTemplates built from the one ProducerFactory (%d records x %d bytes each):%n", records, size);
-            Workload.printComparison(results);
+            log.info("3. the chapter-02 matrix through KafkaTemplates built from the one ProducerFactory ({} records x {} bytes each):", records, size);
+            Workload.logComparison(results);
 
             // ---- 4. Message<?> and sendDefault ---------------------------------------------------------------
             SendResult<String, String> withHeaders = SendPatterns.sendWithHeaders(template, topic, "customer-1", Payloads.json(1, size),
@@ -116,12 +120,12 @@ public class TemplateDemo {
             SendResult<String, String> toDefault = template.sendDefault("customer-2", Payloads.json(2, size)).get(10, TimeUnit.SECONDS);
             var sends = new Table("call", "topic", "partition", "offset", "headers on the record");
             // Offsets are exact values, not magnitudes: String.valueOf keeps them out of the humanising formatter
-            // (which would print offset 69 312 as "69.3K").
+            // (which would render offset 69 312 as "69.3K").
             sends.row("send(Message<?>) with KafkaHeaders.TOPIC/KEY + tenant", withHeaders.getRecordMetadata().topic(), withHeaders.getRecordMetadata().partition(),
                     String.valueOf(withHeaders.getRecordMetadata().offset()), headers(withHeaders));
             sends.row("sendDefault(key, value)  [spring.kafka.template.default-topic]", toDefault.getRecordMetadata().topic(), toDefault.getRecordMetadata().partition(),
                     String.valueOf(toDefault.getRecordMetadata().offset()), headers(toDefault));
-            sends.print("4. the messaging API: Spring Message<?> headers become Kafka record headers (KafkaHeaders.* are consumed by the template)");
+            log.info("4. the messaging API: Spring Message<?> headers become Kafka record headers (KafkaHeaders.* are consumed by the template)\n{}", sends);
 
             // ---- 5. Micrometer -------------------------------------------------------------------------------
             var meters = new Table("meter", "tags", "count", "mean ms");
@@ -131,9 +135,10 @@ public class TemplateDemo {
             for (String name : List.of("kafka.producer.record.send.total", "kafka.producer.batch.size.avg", "kafka.producer.compression.rate.avg", "kafka.producer.request.latency.avg")) {
                 registry.find(name).meters().forEach(m -> meters.row(name, tagsOf(m.getId()), "%.2f".formatted(m.measure().iterator().next().getValue()), ""));
             }
-            meters.print("5. Micrometer: spring-kafka's own timer per template bean + the kafka-clients metrics Boot bound (tag spring.id = factory.client.id)");
-            System.out.println("   the timer is per KafkaTemplate BEAN (name tag); the tuned templates above were not beans and have no timer.");
-            System.out.println("   spring.kafka.template.observation-enabled=true replaces the timer with an Observation per send (tracing span + metrics).");
+            log.info("5. Micrometer: spring-kafka's own timer per template bean + the kafka-clients metrics Boot bound (tag spring.id = factory.client.id)\n{}", meters);
+            log.info("""
+                    the timer is per KafkaTemplate BEAN (name tag); the tuned templates above were not beans and have no timer.
+                      spring.kafka.template.observation-enabled=true replaces the timer with an Observation per send (tracing span + metrics).""");
         });
     }
 

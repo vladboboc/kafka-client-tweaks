@@ -16,6 +16,8 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -49,6 +51,8 @@ import java.util.function.IntSupplier;
 @Profile("spring-error-handling")
 public class ErrorHandlingDemo {
 
+    private static final Logger log = LoggerFactory.getLogger(ErrorHandlingDemo.class);
+
     @Bean
     ApplicationRunner springErrorHandling(DemoSupport support, KafkaTemplate<String, Object> template,
                                           ProducerFactory<String, Object> producerFactory, ScriptedOrderHandler handler) {
@@ -76,7 +80,7 @@ public class ErrorHandlingDemo {
             } finally {
                 raw.destroy();
             }
-            System.out.println("sent to spring.errors: " + keys + " + poison-8 (value '{not json')");
+            log.info("sent to spring.errors: {} + poison-8 (value '{not json')", keys);
 
             support.start("errors-blocking");
             // ok x4 = 4 calls, flaky2 = 3 calls, fatal = 1 call, flaky9 = 4 calls (3 retries); the poison pill never reaches the listener.
@@ -87,7 +91,7 @@ public class ErrorHandlingDemo {
             var timeline = new Table("t ms", "partition", "key", "attempt", "kafka_deliveryAttempt header", "ms since send", "listener");
             handler.blocking().stream().sorted(Comparator.comparingLong(ScriptedOrderHandler.Attempt::tMs)).forEach(a ->
                     timeline.row(a.tMs(), a.partition(), a.key() + "  (" + FailureScript.describe(a.key()) + ")", a.attempt(), a.springAttempt(), a.sinceSendMs(), a.outcome()));
-            timeline.print("1. blocking: DefaultErrorHandler(ExponentialBackOffWithMaxRetries(3): 200, 400, 800 ms), IllegalArgumentException not retryable");
+            log.info("1. blocking: DefaultErrorHandler(ExponentialBackOffWithMaxRetries(3): 200, 400, 800 ms), IllegalArgumentException not retryable\n{}", timeline);
 
             var dlt = new Table("DLT key", "value", "kafka_dlt-exception-fqcn", "kafka_dlt-exception-cause-fqcn", "original topic-partition@offset");
             for (ConsumerRecord<String, byte[]> r : dead) {
@@ -96,7 +100,7 @@ public class ErrorHandlingDemo {
                         simpleName(header(r, KafkaHeaders.DLT_EXCEPTION_CAUSE_FQCN)),
                         header(r, KafkaHeaders.DLT_ORIGINAL_TOPIC) + "-" + intHeader(r, KafkaHeaders.DLT_ORIGINAL_PARTITION) + "@" + longHeader(r, KafkaHeaders.DLT_ORIGINAL_OFFSET));
             }
-            dlt.print("   spring.errors-dlt (%d records): same partition as the original, original value bytes, the exception in headers".formatted(dead.size()));
+            log.info("spring.errors-dlt ({} records): same partition as the original, original value bytes, the exception in headers\n{}", dead.size(), dlt);
 
             // ---- 2. non-blocking retries ------------------------------------------------------------------------
             List<String> retryIds = support.registry().getListenerContainerIds().stream().filter(id -> id.startsWith("errors-retryable")).sorted().toList();
@@ -105,7 +109,7 @@ public class ErrorHandlingDemo {
             for (String key : retryKeys) {
                 template.send(TopicsConfig.RETRYABLE, key, Order.sample(key.hashCode() & 0xffff)).get(10, TimeUnit.SECONDS);
             }
-            System.out.printf("%nsent to spring.retryable: %s; containers started: %s%n", retryKeys, retryIds);
+            log.info("sent to spring.retryable: {}; containers started: {}", retryKeys, retryIds);
             // ok x2 = 2, flaky2 = 3, flaky9 = 4 attempts + 1 DLT call = 10 entries
             await(() -> handler.retryable().size(), 10, Duration.ofSeconds(40), "retryable listener calls");
             support.stop(retryIds.toArray(String[]::new));
@@ -114,13 +118,13 @@ public class ErrorHandlingDemo {
             handler.retryable().stream().sorted(Comparator.comparingLong(ScriptedOrderHandler.Attempt::tMs)).forEach(a ->
                     retries.row(a.tMs(), (a.topic().equals(TopicsConfig.RETRYABLE) ? "main" : a.topic().substring(TopicsConfig.RETRYABLE.length())), a.partition(), a.key() + "  (" + FailureScript.describe(a.key()) + ")",
                             a.attempt(), a.springAttempt(), a.sinceSendMs(), a.outcome()));
-            retries.print("2. @RetryableTopic(attempts=4, backOff=@BackOff(delay=1000, multiplier=2)): retry topics -retry-1000, -retry-2000, -retry-4000, then -dlt");
+            log.info("2. @RetryableTopic(attempts=4, backOff=@BackOff(delay=1000, multiplier=2)): retry topics -retry-1000, -retry-2000, -retry-4000, then -dlt\n{}", retries);
 
             // ---- 3. head-of-line blocking --------------------------------------------------------------------
             var hol = new Table("strategy", "slowest 'ok' record (ms from send to processing)", "why");
             hol.row("blocking (part 1)", maxOkDelay(handler.blocking()), "the partition waits while flaky9-6 is retried 3 times with back-off");
             hol.row("non-blocking (part 2)", maxOkDelay(handler.retryable()), "the failed record leaves the partition; ok records are processed at once");
-            hol.print("3. what the innocent records paid");
+            log.info("3. what the innocent records paid\n{}", hol);
         });
     }
 
@@ -149,7 +153,7 @@ public class ErrorHandlingDemo {
             }
         }
         // The topic was recreated at the start of this run, so a short read means the dead-letter path itself is
-        // broken. Fail like every other wait in this module instead of printing a convincing but empty table.
+        // broken. Fail like every other wait in this module instead of logging a convincing but empty table.
         if (records.size() < expected) {
             throw new IllegalStateException("%s: expected %d dead-letter records within %s, got %d"
                     .formatted(TopicsConfig.ERRORS_DLT, expected, timeout, records.size()));

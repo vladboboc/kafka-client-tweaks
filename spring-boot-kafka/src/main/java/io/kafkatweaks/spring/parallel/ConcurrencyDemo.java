@@ -11,6 +11,8 @@ import io.kafkatweaks.spring.parallel.recipe.ConcurrencyRecipe;
 import io.kafkatweaks.spring.parallel.recipe.ParallelListeners;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -40,6 +42,8 @@ import java.util.function.LongSupplier;
 @Configuration(proxyBeanMethods = false)
 @Profile("spring-concurrency")
 public class ConcurrencyDemo {
+
+    private static final Logger log = LoggerFactory.getLogger(ConcurrencyDemo.class);
 
     /** The scaling listeners, in the order of the first table. */
     static final List<String> SCALING = List.of("par-1", "par-3", "par-6", "par-8");
@@ -83,8 +87,9 @@ public class ConcurrencyDemo {
                         "%.0f".formatted(probe.count(id) / ms * 1000), "%.2f".formatted(ms / probe.count(id)), "%.3f".formatted(timerMean),
                         probe.threads(id).size() + (probe.virtualThreads() ? " virtual" : " platform"));
             }
-            scaling.print("1. %d records x %d ms of work each (parkNanos) on 6 partitions; concurrency = child containers = consumers in the group".formatted(total, workMs));
-            System.out.printf("   effective work per record on this machine: %.2f ms (par-1 has one consumer, so its ms/record is the handler's cost + poll overhead)%n", singleMs / total);
+            log.info("1. {} records x {} ms of work each (parkNanos) on 6 partitions; concurrency = child containers = consumers in the group\n{}", total, workMs, scaling);
+            log.info("effective work per record on this machine: {} ms (par-1 has one consumer, so its ms/record is the handler's cost + poll overhead)",
+                    "%.2f".formatted(singleMs / total));
 
             // ---- 2. batch listener -----------------------------------------------------------------------------
             var sw = Stopwatch.start();
@@ -97,7 +102,7 @@ public class ConcurrencyDemo {
             var batch = new Table("listener", "concurrency (from yml)", "calls", "records/call avg", "largest call", "start -> drained ms", "records/s", "timer mean ms per call");
             batch.row("par-batch", batchContainer.getConcurrency(), probe.batchCalls(), "%.1f".formatted((double) probe.count("par-batch") / probe.batchCalls()),
                     probe.largestBatch(), "%.0f".formatted(batchMs), "%.0f".formatted(probe.count("par-batch") / batchMs * 1000), "%.3f".formatted(batchTimerMean));
-            batch.print("2. batch=\"true\": the listener gets List<ConsumerRecord> (<= max.poll.records=500), here at 2 ms per CALL instead of %d ms per record".formatted(workMs));
+            log.info("2. batch=\"true\": the listener gets List<ConsumerRecord> (<= max.poll.records=500), here at 2 ms per CALL instead of {} ms per record\n{}", workMs, batch);
 
             // ---- 3. asyncAcks ------------------------------------------------------------------------------------
             sw = Stopwatch.start();
@@ -109,10 +114,11 @@ public class ConcurrencyDemo {
             var async = new Table("listener", "consumer threads", "workers", "records", "start -> drained ms", "records/s", "compare with");
             async.row("par-async", 1, "6 virtual, one per partition", probe.count("par-async"), "%.0f".formatted(asyncMs),
                     "%.0f".formatted(probe.count("par-async") / asyncMs * 1000), "par-1 (same single consumer) and par-6 (six consumers)");
-            async.print("3. ackMode=MANUAL + asyncAcks: the poll thread hands records to per-partition workers and returns; workers acknowledge out of order");
-            System.out.println("   max.partition.fetch.bytes=16K on this listener so that a poll mixes all six partitions (chapter 10's lesson: a poll");
-            System.out.println("   otherwise returns one partition at a time and only one worker would be busy). The container pauses the consumer");
-            System.out.printf("   until every record of a poll is acknowledged: %d pause/resume events came from par-async alone.%n",
+            log.info("3. ackMode=MANUAL + asyncAcks: the poll thread hands records to per-partition workers and returns; workers acknowledge out of order\n{}", async);
+            log.info("""
+                    max.partition.fetch.bytes=16K on this listener so that a poll mixes all six partitions (chapter 10's lesson: a poll
+                      otherwise returns one partition at a time and only one worker would be busy). The container pauses the consumer
+                      until every record of a poll is acknowledged: {} pause/resume events came from par-async alone.""",
                     events.pauseResume("par-async").size());
 
             // ---- 4. pause / resume -------------------------------------------------------------------------------
@@ -134,9 +140,9 @@ public class ConcurrencyDemo {
             pause.row("pause() called after 400 ms", atPause, "takes effect before the next poll(); records already fetched are still delivered");
             pause.row("2 s later", whilePaused, "paused: poll() keeps the membership alive and returns nothing (" + (whilePaused - atPause) + " more records)");
             pause.row("1.5 s after resume()", afterResume, "delivery continues from the committed position");
-            pause.print("4. MessageListenerContainer.pause() / resume() (spring-kafka's back-pressure switch; pauseImmediate=true stops after the current record)");
-            System.out.printf("   events from the par-pause container: %s%n", events.pauseResume("par-pause"));
-            System.out.printf("   ListenerContainerIdleEvents so far: %d (idle-event-interval=2s, from every idle container of this run)%n", events.idleEvents());
+            log.info("4. MessageListenerContainer.pause() / resume() (spring-kafka's back-pressure switch; pauseImmediate=true stops after the current record)\n{}", pause);
+            log.info("events from the par-pause container: {}", events.pauseResume("par-pause"));
+            log.info("ListenerContainerIdleEvents so far: {} (idle-event-interval=2s, from every idle container of this run)", events.idleEvents());
         });
     }
 

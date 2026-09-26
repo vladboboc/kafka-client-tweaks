@@ -1,0 +1,7 @@
+# The profile of a run that names no demo, or an unknown one (see SpringTweaksApplication): the application only lists
+# the demos, so it must start without a broker. KafkaAdmin would otherwise connect at startup to create the TopicsConfig
+# topics (and, with fail-fast, fail the listing when the stack is down).
+spring:
+  kafka:
+    admin:
+      auto-create: false

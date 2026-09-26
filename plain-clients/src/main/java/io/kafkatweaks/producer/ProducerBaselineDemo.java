@@ -5,6 +5,7 @@ import io.kafkatweaks.common.Args;
 import io.kafkatweaks.common.Env;
 import io.kafkatweaks.common.Knobs;
 import io.kafkatweaks.common.MetricsReport;
+import io.kafkatweaks.common.Table;
 import io.kafkatweaks.common.Topics;
 import io.kafkatweaks.common.Workload;
 import io.kafkatweaks.producer.recipe.ProducerBasics;
@@ -13,6 +14,8 @@ import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Properties;
 
@@ -28,6 +31,8 @@ import java.util.Properties;
  * </pre>
  */
 public final class ProducerBaselineDemo implements Demo {
+
+    private static final Logger log = LoggerFactory.getLogger(ProducerBaselineDemo.class);
 
     public static final String[] KNOBS = {
             ProducerConfig.ACKS_CONFIG, ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG,
@@ -50,7 +55,7 @@ public final class ProducerBaselineDemo implements Demo {
         }
 
         Properties props = args.applyOverrides(ProducerBasics.config(Env.bootstrapServers(), "baseline-producer"));   // <- the recipe under test
-        Knobs.printProducer(props, KNOBS);
+        Knobs.logProducer(props, KNOBS);
 
         // --- 1. One synchronous send: the slowest possible way to use a producer, and the clearest. ---
         try (var producer = new KafkaProducer<String, String>(props)) {
@@ -60,26 +65,25 @@ public final class ProducerBaselineDemo implements Demo {
             t0 = System.nanoTime();
             md = ProducerBasics.sendAndWait(producer, new ProducerRecord<>(topic, "warm-up", "hello again"));
             double secondMs = (System.nanoTime() - t0) / 1_000_000d;
-            System.out.printf("%nsynchronous send #1: %.1f ms (includes metadata fetch + connection setup)%n", firstMs);
-            System.out.printf("synchronous send #2: %.1f ms  -> %s-%d@%d%n", secondMs, md.topic(), md.partition(), md.offset());
-            System.out.println("send().get() per record caps you at roughly 1000 / round-trip-ms records per second. Never do this in a loop.");
+            log.info("synchronous send #1: {} ms (includes metadata fetch + connection setup)", "%.1f".formatted(firstMs));
+            log.info("synchronous send #2: {} ms  -> {}-{}@{}", "%.1f".formatted(secondMs), md.topic(), md.partition(), md.offset());
+            log.info("send().get() per record caps you at roughly 1000 / round-trip-ms records per second. Never do this in a loop.");
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
 
         // --- 2. The asynchronous workload every other chapter reuses. ---
         var result = Workload.run("baseline", props, topic, records, size, Workload.Payload.JSON, 0);
-        Workload.printSummary(result);
-        Workload.printPartitionSpread(result);
+        Workload.logSummary(result);
+        Workload.logPartitionSpread(result);
 
         // --- 3. The producer's own view of what happened. ---
         try (var producer = new KafkaProducer<String, String>(props)) {
             // Fresh producer, so these are zero: shown once to make the point that metrics are per instance.
-            MetricsReport.print("metrics of a producer that has not sent anything (per-instance, mostly NaN/0)",
+            MetricsReport.logMetrics("metrics of a producer that has not sent anything (per-instance, mostly NaN/0)",
                     producer.metrics(), MetricsReport.PRODUCER, "record-send-total", "batch-size-avg", "buffer-available-bytes");
         }
-        System.out.println("\nmetrics of the producer that ran the workload:");
-        new io.kafkatweaks.common.Table("metric (producer-metrics)", "value", "meaning")
+        var metrics = new Table("metric (producer-metrics)", "value", "meaning")
                 .row("record-send-rate", result.metrics().get("record-send-rate"), "records/s the sender thread pushed out")
                 .row("batch-size-avg", result.metrics().get("batch-size-avg"), "bytes per batch actually sent (compressed)")
                 .row("records-per-request-avg", result.metrics().get("records-per-request-avg"), "records per produce request")
@@ -88,7 +92,7 @@ public final class ProducerBaselineDemo implements Demo {
                 .row("record-queue-time-avg", result.metrics().get("record-queue-time-avg"), "ms a record waited in the accumulator")
                 .row("request-rate", result.metrics().get("request-rate"), "produce requests/s")
                 .row("record-retry-total", result.metrics().get("record-retry-total"), "records re-sent after a retriable error")
-                .row("record-error-total", result.metrics().get("record-error-total"), "records that failed for good")
-                .print();
+                .row("record-error-total", result.metrics().get("record-error-total"), "records that failed for good");
+        log.info("metrics of the producer that ran the workload:\n{}", metrics);
     }
 }

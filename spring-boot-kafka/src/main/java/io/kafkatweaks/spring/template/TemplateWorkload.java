@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * The plain chapters' {@link Workload} driven through a {@link KafkaTemplate}: same records (null keys, JSON of
- * about {@code sizeBytes}), same result record, so {@code Workload.printComparison} can put a Spring run next to
+ * about {@code sizeBytes}), same result record, so {@code Workload.logComparison} can put a Spring run next to
  * a plain one. {@code template.metrics()} is the underlying producer's {@code metrics()}, so the metric columns
  * are the same too.
  */

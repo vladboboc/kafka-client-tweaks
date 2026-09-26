@@ -15,8 +15,11 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.config.ConfigException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Map;
@@ -44,6 +47,7 @@ import java.util.concurrent.ExecutionException;
  */
 public final class ProducerDurabilityDemo implements Demo {
 
+    private static final Logger log = LoggerFactory.getLogger(ProducerDurabilityDemo.class);
     private static final String TOPIC_ACKS = "tweaks.durability";
     private static final String TOPIC_RF2 = "tweaks.durability-rf2";
 
@@ -78,52 +82,50 @@ public final class ProducerDurabilityDemo implements Demo {
                 ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "false")), TOPIC_ACKS, records, size, Workload.Payload.JSON, 0));
         results.add(Workload.run("acks=all + idempotence (default)", props(args, "acks-all-idem", DurableProducer.durable()),
                 TOPIC_ACKS, records, size, Workload.Payload.JSON, 0));
-        Workload.printComparison(results);
+        Workload.logComparison(results);
 
-        new Table("acks", "the broker replies when...", "you can lose data when...", "ordering / duplicates")
+        var meaning = new Table("acks", "the broker replies when...", "you can lose data when...", "ordering / duplicates")
                 .row("0", "never; the client considers the record sent once it left the socket",
                         "always: any network error or leader failure is silent", "no retries, so no duplicates; gaps instead")
                 .row("1", "the leader wrote it to its log",
                         "the leader dies before followers replicated the record", "retries can duplicate/reorder without idempotence")
                 .row("all", "every in-sync replica wrote it (bounded below by min.insync.replicas)",
-                        "only if min.insync.replicas brokers fail at once", "with enable.idempotence: exactly one copy, in order per partition")
-                .print("what acks means");
+                        "only if min.insync.replicas brokers fail at once", "with enable.idempotence: exactly one copy, in order per partition");
+        log.info("what acks means\n{}", meaning);
 
-        Knobs.printProducer(props(args, "knobs", Map.of()),
+        Knobs.logProducer(props(args, "knobs", Map.of()),
                 ProducerConfig.ACKS_CONFIG, ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG,
                 ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, ProducerConfig.RETRIES_CONFIG,
                 ProducerConfig.RETRY_BACKOFF_MS_CONFIG, ProducerConfig.RETRY_BACKOFF_MAX_MS_CONFIG,
                 ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, ProducerConfig.LINGER_MS_CONFIG);
-        System.out.println("""
+        log.info("""
                 idempotence (default on since 3.0) gives each producer a PID and each record a per-partition sequence
-                number, so a retried batch that the broker already has is de-duplicated, and up to 5 in-flight
-                requests stay in order. It costs nothing measurable; the only reason to turn it off is acks=0/1.
-                """);
+                  number, so a retried batch that the broker already has is de-duplicated, and up to 5 in-flight
+                  requests stay in order. It costs nothing measurable; the only reason to turn it off is acks=0/1.""");
     }
 
     // ------------------------------------------------------------------ 2. timeouts
 
     private static void timeoutChain() {
-        System.out.println("""
+        log.info("""
                 the timeout chain (all producer side):
                   max.block.ms           how long send() may block for metadata / buffer space          default 60000
                   linger.ms              how long a batch waits for company in the accumulator          default 5
                   request.timeout.ms     how long one produce request may wait for the broker            default 30000
                   retry.backoff.ms       pause between retries (exponential up to retry.backoff.max.ms)  default 100 / 1000
                   delivery.timeout.ms    total budget from send() to callback, including all retries     default 120000
-                rule enforced by the client: delivery.timeout.ms >= linger.ms + request.timeout.ms
-                """);
+                  rule enforced by the client: delivery.timeout.ms >= linger.ms + request.timeout.ms""");
         var props = Env.producer("timeouts");
         props.put(ProducerConfig.LINGER_MS_CONFIG, "1000");
         props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, "30000");
         props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, "5000");
         try (var ignored = new KafkaProducer<String, String>(props)) {
-            System.out.println("unexpected: producer accepted an impossible timeout chain");
+            log.warn("unexpected: producer accepted an impossible timeout chain");
         } catch (KafkaException e) {
             // The constructor wraps the ConfigException in KafkaException("Failed to construct kafka producer").
             Throwable cause = e.getCause() instanceof ConfigException c ? c : e;
-            System.out.println("delivery.timeout.ms=5000 with request.timeout.ms=30000 is rejected at construction:\n  "
-                    + cause.getClass().getSimpleName() + ": " + cause.getMessage() + "\n");
+            log.info("delivery.timeout.ms=5000 with request.timeout.ms=30000 is rejected at construction:\n  {}: {}",
+                    cause.getClass().getSimpleName(), cause.getMessage());
         }
     }
 
@@ -135,7 +137,7 @@ public final class ProducerDurabilityDemo implements Demo {
 
         try (var topics = new Topics()) {
             TopicDescription d = topics.describeExisting(TOPIC_RF2);
-            topics.printPartitions(TOPIC_RF2);
+            topics.logPartitions(TOPIC_RF2);
             var partition = d.partitions().getFirst();
             // Stop a follower, not the leader: the outcome is the same (ISR drops to 1 < min.insync.replicas)
             // and the reader does not also have to reason about leader election.
@@ -144,23 +146,20 @@ public final class ProducerDurabilityDemo implements Demo {
                     .findFirst().orElseThrow();
             String container = "kafka-" + victim;
 
-            System.out.printf("""
-
-                    %s has RF=2 and min.insync.replicas=2: BOTH replicas must be in sync for acks=all to succeed.
-                    With one of them gone the topic is read-only for acks=all producers, while acks=1 keeps writing to
-                    the leader alone. (The cluster itself stays up: the KRaft quorum only needs 2 of 3 controllers.)
-
-                    """, TOPIC_RF2);
+            log.info("""
+                    {} has RF=2 and min.insync.replicas=2: BOTH replicas must be in sync for acks=all to succeed.
+                      With one of them gone the topic is read-only for acks=all producers, while acks=1 keeps writing to
+                      the leader alone. (The cluster itself stays up: the KRaft quorum only needs 2 of 3 controllers.)""", TOPIC_RF2);
 
             sendOne("before", TOPIC_RF2, "all");
 
             if (control.equals("docker")) {
                 docker("stop", container);
             } else {
-                System.out.printf(">>> in another terminal run:   docker compose stop %s%n", container);
+                log.info(">>> in another terminal run:   docker compose stop {}", container);
             }
             waitForIsr(topics, TOPIC_RF2, 1, waitSeconds);
-            topics.printPartitions(TOPIC_RF2);
+            topics.logPartitions(TOPIC_RF2);
 
             sendOne("broker down", TOPIC_RF2, "all");
             sendOne("broker down", TOPIC_RF2, "1");
@@ -168,18 +167,16 @@ public final class ProducerDurabilityDemo implements Demo {
             if (control.equals("docker")) {
                 docker("start", container);
             } else {
-                System.out.printf("%n>>> now bring it back:   docker compose start %s%n", container);
+                log.info(">>> now bring it back:   docker compose start {}", container);
             }
             waitForIsr(topics, TOPIC_RF2, 2, waitSeconds);
-            topics.printPartitions(TOPIC_RF2);
+            topics.logPartitions(TOPIC_RF2);
             sendOne("recovered", TOPIC_RF2, "all");
         }
-        System.out.println("""
-
+        log.info("""
                 takeaway: acks=all is only as strong as min.insync.replicas. RF=3 + min.insync.replicas=2 (the
-                cluster default here) survives one broker; RF=2 + min.insync.replicas=2 survives none, and
-                RF=3 + min.insync.replicas=1 can acknowledge a record that lives on a single disk.
-                """);
+                  cluster default here) survives one broker; RF=2 + min.insync.replicas=2 survives none, and
+                  RF=3 + min.insync.replicas=1 can acknowledge a record that lives on a single disk.""");
     }
 
     /** One send with a short delivery budget so a refused write shows up in seconds rather than minutes. */
@@ -191,40 +188,46 @@ public final class ProducerDurabilityDemo implements Demo {
         long t0 = System.nanoTime();
         try (var producer = new KafkaProducer<String, String>(props)) {
             RecordMetadata md = producer.send(new ProducerRecord<>(topic, "k", "phase=" + phase)).get();
-            System.out.printf("[%-11s] acks=%-3s -> OK   offset %d after %.0f ms%n", phase, acks, md.offset(), ms(t0));
+            log.info("[{}] acks={} -> OK   offset {} after {} ms", "%-11s".formatted(phase), "%-3s".formatted(acks), md.offset(), Math.round(ms(t0)));
             if (acks.equals("1") && phase.startsWith("broker")) {
-                System.out.println("              ^ the leader accepted it alone; if that broker dies now the record is gone");
+                log.info("              ^ the leader accepted it alone; if that broker dies now the record is gone");
             }
         } catch (ExecutionException e) {
             Throwable cause = e.getCause();
-            System.out.printf("[%-11s] acks=%-3s -> FAIL after %.0f ms: %s: %s%n", phase, acks, ms(t0),
+            log.info("[{}] acks={} -> FAIL after {} ms: {}: {}", "%-11s".formatted(phase), "%-3s".formatted(acks), Math.round(ms(t0)),
                     cause.getClass().getSimpleName(), firstLine(cause.getMessage()));
-            System.out.println("              (NotEnoughReplicasException is retriable: the producer kept retrying until delivery.timeout.ms)");
+            log.info("              (NotEnoughReplicasException is retriable: the producer kept retrying until delivery.timeout.ms)");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
     }
 
     private static void waitForIsr(Topics topics, String topic, int expectedIsr, int waitSeconds) {
-        System.out.printf("waiting up to %ds for ISR of %s-0 to reach %d ...", waitSeconds, topic, expectedIsr);
-        long deadline = System.currentTimeMillis() + waitSeconds * 1000L;
-        while (System.currentTimeMillis() < deadline) {
+        log.info("waiting up to {} s for the ISR of {}-0 to reach {} ...", waitSeconds, topic, expectedIsr);
+        long start = System.currentTimeMillis();
+        long deadline = start + waitSeconds * 1000L;
+        for (int polls = 1; System.currentTimeMillis() < deadline; polls++) {
             int isr = topics.describe(topic).map(d -> d.partitions().getFirst().isr().size()).orElse(-1);
             if (isr == expectedIsr) {
-                System.out.println(" done");
+                log.info("the ISR of {}-0 reached {} after {} s", topic, expectedIsr, (System.currentTimeMillis() - start) / 1000);
                 return;
             }
+            if (polls % 10 == 0) {
+                log.info("still waiting: the ISR of {}-0 has {} replica(s)", topic, isr);
+            }
             Topics.sleep(1000);
-            System.out.print('.');
         }
-        System.out.println(" timed out (continuing anyway; results below may not show the effect)");
+        log.warn("the ISR of {}-0 did not reach {} within {} s (continuing anyway; results below may not show the effect)",
+                topic, expectedIsr, waitSeconds);
     }
 
     private static void docker(String action, String container) throws IOException, InterruptedException {
-        System.out.printf("%n$ docker %s %s%n", action, container);
-        var p = new ProcessBuilder("docker", action, container).inheritIO().start();
+        log.info("$ docker {} {}", action, container);
+        // Captured instead of inherited, so that the console only carries log lines; it matters only when docker fails.
+        var p = new ProcessBuilder("docker", action, container).redirectErrorStream(true).start();
+        String output = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
         if (p.waitFor() != 0) {
-            throw new IllegalStateException("docker " + action + " " + container + " failed");
+            throw new IllegalStateException("docker " + action + " " + container + " failed: " + output);
         }
     }
 

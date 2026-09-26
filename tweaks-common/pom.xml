@@ -43,6 +43,16 @@
             <artifactId>avro</artifactId>
         </dependency>
 
+        <!-- The helpers log their tables and messages through the SLF4J API. A library depends on the API only; the
+             application modules choose the backend (Logback in both, as in any Spring Boot application). kafka-clients
+             brings slf4j-api too, but at runtime scope, so it cannot be compiled against. Inside the Spring module Boot's
+             BOM pins this to its own version, like kafka-clients. -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+        </dependency>
+
         <!-- ===== test: pure-logic unit tests only, no broker needed for `./mvnw verify` ===== -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

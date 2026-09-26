@@ -17,6 +17,8 @@ import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.NoOffsetForPartitionException;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -44,6 +46,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class ConsumerOffsetsDemo implements Demo {
 
+    private static final Logger log = LoggerFactory.getLogger(ConsumerOffsetsDemo.class);
     private static final String TOPIC = "tweaks.offsets";
 
     @Override
@@ -55,7 +58,7 @@ public final class ConsumerOffsetsDemo implements Demo {
             topics.recreate(TOPIC, 3);
             Seed.ensure(topics, TOPIC, 3, records, 200);
         }
-        Knobs.printConsumer(Env.consumer("knobs", "knobs"), ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG,
+        Knobs.logConsumer(Env.consumer("knobs", "knobs"), ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG,
                 ConsumerConfig.AUTO_COMMIT_INTERVAL_MS_CONFIG, ConsumerConfig.AUTO_OFFSET_RESET_CONFIG,
                 ConsumerConfig.MAX_POLL_RECORDS_CONFIG, ConsumerConfig.ISOLATION_LEVEL_CONFIG);
 
@@ -70,8 +73,9 @@ public final class ConsumerOffsetsDemo implements Demo {
     enum Strategy { COMMIT_BEFORE_PROCESSING, COMMIT_AFTER_PROCESSING, COMMIT_AFTER_IDEMPOTENT }
 
     private static void crashStrategies(Args args, int records, int crashAt) {
-        System.out.printf("%n1. the consumer processes records, and \"crashes\" after record #%d in the middle of a batch (closes without%n"
-                + "   committing). A new instance of the same group then finishes the topic. What does the output look like?%n%n", crashAt);
+        log.info("""
+                1. the consumer processes records, and "crashes" after record #{} in the middle of a batch (closes without
+                   committing). A new instance of the same group then finishes the topic. What does the output look like?""", crashAt);
         var table = new Table("strategy", "processed (run 1 + run 2)", "distinct records", "missing", "duplicates (handler saw twice)");
         for (var s : Strategy.values()) {
             String group = "offsets-" + s.name().toLowerCase() + "-" + System.nanoTime();
@@ -83,14 +87,14 @@ public final class ConsumerOffsetsDemo implements Demo {
             long dupes = seen.values().stream().filter(c -> c > 1).count();
             table.row(s.name().toLowerCase().replace('_', ' '), run1 + " + " + run2, seen.size(), missing, dupes);
         }
-        table.print("%d records, crash after #%d".formatted(records, crashAt));
-        System.out.println("""
+        log.info("{} records, crash after #{}\n{}", records, crashAt, table);
+        log.info("""
+                reading it
                   commit before processing  = at-most-once: the records of the interrupted batch are never processed (missing > 0)
                   commit after processing   = at-least-once: the interrupted batch is processed again (duplicates > 0)
                   + idempotent handler      = effectively-once: same redelivery, but the handler recognises what it already did
                                               (dedupe by key/event id, upsert, conditional write, the inbox pattern)
-                  exactly-once end to end exists only inside Kafka -> Kafka pipelines (chapter 06's transactions).
-                """);
+                  exactly-once end to end exists only inside Kafka -> Kafka pipelines (chapter 06's transactions).""");
     }
 
     /** Returns the number of records the handler processed in this run. */
@@ -145,11 +149,9 @@ public final class ConsumerOffsetsDemo implements Demo {
     // ------------------------------------------------------------------ 2. auto-commit timing
 
     private static void autoCommit(Args args) {
-        System.out.println("""
-
+        log.info("""
                 2. enable.auto.commit=true commits the offsets returned by the previous poll() inside the next poll(), once
-                   auto.commit.interval.ms (5000) has elapsed since the last commit. So the committed offset trails the position:
-                """);
+                   auto.commit.interval.ms (5000) has elapsed since the last commit. So the committed offset trails the position:""");
         String group = "offsets-autocommit-" + System.nanoTime();
         Properties props = Env.consumer(group, "offsets-autocommit");
         props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "100");
@@ -175,19 +177,18 @@ public final class ConsumerOffsetsDemo implements Demo {
             }
             // close() with auto-commit on performs a final synchronous commit: a clean shutdown loses nothing.
         }
-        table.print("position vs committed offset over 12 s");
-        System.out.println("""
-                  auto-commit is at-least-once as long as processing happens synchronously inside the poll loop; a crash
+        log.info("position vs committed offset over 12 s\n{}", table);
+        log.info("""
+                auto-commit is at-least-once as long as processing happens synchronously inside the poll loop; a crash
                   redelivers up to auto.commit.interval.ms worth of records. It becomes at-most-once the moment you hand
                   records to another thread and keep polling: the offsets get committed before the work is done.
-                  a clean close() commits, so orderly shutdowns are exact; only crashes replay.
-                """);
+                  a clean close() commits, so orderly shutdowns are exact; only crashes replay.""");
     }
 
     // ------------------------------------------------------------------ 3. auto.offset.reset
 
     private static void offsetReset(Args args, int records) {
-        System.out.println("\n3. auto.offset.reset decides where a group with NO committed offsets starts (it does nothing once offsets exist):\n");
+        log.info("3. auto.offset.reset decides where a group with NO committed offsets starts (it does nothing once offsets exist):");
         var table = new Table("auto.offset.reset", "first poll returned", "position after");
         for (String reset : List.of("earliest", "latest", "none")) {
             Properties props = Env.consumer("offsets-reset-" + reset + "-" + System.nanoTime(), "offsets-reset-" + reset);
@@ -209,14 +210,14 @@ public final class ConsumerOffsetsDemo implements Demo {
                 table.row(reset, "NoOffsetForPartitionException", "-");
             }
         }
-        table.print("");
-        System.out.println("  none is the strict choice for pipelines that must never silently skip or replay: fail, and let a human seek.\n");
+        log.info("a fresh group under each auto.offset.reset\n{}", table);
+        log.info("none is the strict choice for pipelines that must never silently skip or replay: fail, and let a human seek.");
     }
 
     // ------------------------------------------------------------------ 4. seeking
 
     private static void seeking(Args args, int records) {
-        System.out.println("4. seeking: offsets are just numbers, and you may set them.\n");
+        log.info("4. seeking: offsets are just numbers, and you may set them.");
         Properties props = Env.consumer("offsets-seek-" + System.nanoTime(), "offsets-seek");
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
         args.applyOverrides(props);
@@ -242,12 +243,11 @@ public final class ConsumerOffsetsDemo implements Demo {
             // Committing a chosen offset is how you "rewind" a whole group from the outside as well:
             Replay.rewindGroup(consumer);
             table.row("commitSync(offset 0 for every partition)", "group now restarts from 0 (see also: kafka-consumer-groups --reset-offsets)");
-            table.print("");
+            log.info("seeks on the {}-record topic\n{}", records, table);
 
-            MetricsReport.print("commit metrics of this consumer", consumer.metrics(), MetricsReport.CONSUMER_COORDINATOR,
+            MetricsReport.logMetrics("commit metrics of this consumer", consumer.metrics(), MetricsReport.CONSUMER_COORDINATOR,
                     "commit-latency-avg", "commit-rate", "commit-total");
         }
-        System.out.printf("  (%d records in the topic)%n", records);
     }
 
     private static long countToEnd(KafkaConsumer<String, String> consumer) {

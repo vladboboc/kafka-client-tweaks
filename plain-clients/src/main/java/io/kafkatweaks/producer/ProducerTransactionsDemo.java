@@ -19,6 +19,8 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.ProducerFencedException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -45,6 +47,7 @@ import java.util.Set;
  */
 public final class ProducerTransactionsDemo implements Demo {
 
+    private static final Logger log = LoggerFactory.getLogger(ProducerTransactionsDemo.class);
     private static final String IN = "tweaks.txn-in";
     private static final String OUT = "tweaks.txn-out";
 
@@ -58,10 +61,10 @@ public final class ProducerTransactionsDemo implements Demo {
             topics.recreate(OUT, 3);
             topics.deleteGroup("txn-processor");
         }
-        Knobs.printProducer(txnProducerProps(args, "demo-knobs"),
+        Knobs.logProducer(txnProducerProps(args, "demo-knobs"),
                 ProducerConfig.TRANSACTIONAL_ID_CONFIG, ProducerConfig.TRANSACTION_TIMEOUT_CONFIG,
                 ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, ProducerConfig.ACKS_CONFIG, ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION);
-        Knobs.printConsumer(consumerProps(args, "demo-knobs", "read_committed"),
+        Knobs.logConsumer(consumerProps(args, "demo-knobs", "read_committed"),
                 ConsumerConfig.ISOLATION_LEVEL_CONFIG, ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG);
 
         atomicWrites(args);
@@ -72,7 +75,7 @@ public final class ProducerTransactionsDemo implements Demo {
     // ------------------------------------------------------------------ 1. atomic writes
 
     private static void atomicWrites(Args args) {
-        System.out.println("\n1. atomic writes across partitions\n");
+        log.info("1. atomic writes across partitions");
         try (var producer = new KafkaProducer<String, String>(txnProducerProps(args, "atomic-writer"))) {
             producer.initTransactions();
 
@@ -81,14 +84,14 @@ public final class ProducerTransactionsDemo implements Demo {
                 producer.send(new ProducerRecord<>(OUT, "aborted-" + i, "this record will never be read by read_committed consumers"));
             }
             producer.abortTransaction();
-            System.out.println("sent 10 records over 3 partitions, then abortTransaction()");
+            log.info("sent 10 records over 3 partitions, then abortTransaction()");
 
             var committed = new ArrayList<ProducerRecord<String, String>>();
             for (int i = 0; i < 10; i++) {
                 committed.add(new ProducerRecord<>(OUT, "committed-" + i, "visible"));
             }
             ExactlyOnceProcessor.sendAtomically(producer, committed);   // <- the recipe under test
-            System.out.println("sent 10 records over 3 partitions, then commitTransaction()");
+            log.info("sent 10 records over 3 partitions, then commitTransaction()");
         }
 
         var table = new Table("isolation.level", "records seen", "keys");
@@ -97,18 +100,17 @@ public final class ProducerTransactionsDemo implements Demo {
             long n = drain(consumerProps(args, "atomic-" + isolation, isolation), OUT, r -> keys.add(r.key().replaceAll("-\\d+$", "")));
             table.row(isolation, n, String.join(",", keys));
         }
-        table.print("what consumers see (both read the topic from the beginning)");
-        System.out.println("""
+        log.info("what consumers see (both read the topic from the beginning)\n{}", table);
+        log.info("""
                 aborted records are physically in the log (read_uncommitted returns them); read_committed consumers skip
-                them using the transaction markers the coordinator wrote when the transaction ended.
-                the default isolation.level is read_uncommitted: a consumer that must not see aborted data has to opt in.
-                """);
+                  them using the transaction markers the coordinator wrote when the transaction ended.
+                  the default isolation.level is read_uncommitted: a consumer that must not see aborted data has to opt in.""");
     }
 
     // ------------------------------------------------------------------ 2. commit cost
 
     private static void commitCost(Args args, int size) {
-        System.out.println("\n2. what a transaction costs: commit = round trips to the transaction coordinator + markers on every partition\n");
+        log.info("2. what a transaction costs: commit = round trips to the transaction coordinator + markers on every partition");
         var table = new Table("records per transaction", "records/s", "commits/s");
         int total = 3000;
         for (int perTxn : new int[] {1, 10, 100, 1000}) {
@@ -135,14 +137,14 @@ public final class ProducerTransactionsDemo implements Demo {
             producer.flush();
             table.row("no transaction (idempotent)", watch.rate(total), 0);
         }
-        table.print("%d records of %d bytes".formatted(total, size));
-        System.out.println("a transaction per record is the classic mistake; batch by time (e.g. every 100 ms) or by poll() and it is nearly free.\n");
+        log.info("{} records of {} bytes\n{}", total, size, table);
+        log.info("a transaction per record is the classic mistake; batch by time (e.g. every 100 ms) or by poll() and it is nearly free.");
     }
 
     // ------------------------------------------------------------------ 3. exactly-once consume-transform-produce
 
     private static void exactlyOnce(Args args, int records, int size) throws Exception {
-        System.out.printf("%n3. exactly-once consume-transform-produce: %s -> upper-case -> %s%n%n", IN, OUT);
+        log.info("3. exactly-once consume-transform-produce: {} -> upper-case -> {}", IN, OUT);
         try (var topics = new Topics()) {
             topics.recreate(OUT, 3);
         }
@@ -152,27 +154,27 @@ public final class ProducerTransactionsDemo implements Demo {
             }
             seed.flush();
         }
-        System.out.printf("seeded %d input records%n", records);
+        log.info("seeded {} input records", records);
 
         // Run 1 processes about half, then "crashes" in the middle of a transaction (no commit, no close).
         var first = new Processor(args, "processor-1", records / 2);
         int processedBeforeCrash = first.run();
-        System.out.printf("processor-1 processed %d records and crashed mid-transaction (in-flight batch neither committed nor aborted)%n", processedBeforeCrash);
+        log.info("processor-1 processed {} records and crashed mid-transaction (in-flight batch neither committed nor aborted)", processedBeforeCrash);
 
         // Run 2 uses the SAME transactional.id: initTransactions() fences processor-1 and aborts its open transaction.
         var second = new Processor(args, "processor-2", Integer.MAX_VALUE);
         int processedAfterRestart = second.run();
-        System.out.printf("processor-2 (same transactional.id) resumed from the last committed offsets and processed %d records%n", processedAfterRestart);
+        log.info("processor-2 (same transactional.id) resumed from the last committed offsets and processed {} records", processedAfterRestart);
 
         // Zombie fencing: processor-1's producer is still inside its half-finished transaction. Whatever it tries
         // next is rejected, because processor-2's initTransactions() bumped the epoch of the transactional.id.
         try {
             first.producer.send(new ProducerRecord<>(OUT, "zombie", "should never land"));
             first.producer.commitTransaction();
-            System.out.println("unexpected: zombie producer was not fenced");
+            log.warn("unexpected: zombie producer was not fenced");
         } catch (KafkaException e) {
             Throwable c = e.getCause() instanceof ProducerFencedException f ? f : e;
-            System.out.printf("processor-1's producer is a zombie now: %s: %s%n", c.getClass().getSimpleName(), firstLine(c.getMessage()));
+            log.info("processor-1's producer is a zombie now: {}: {}", c.getClass().getSimpleName(), firstLine(c.getMessage()));
         } finally {
             first.producer.close(Duration.ZERO);
         }
@@ -180,16 +182,15 @@ public final class ProducerTransactionsDemo implements Demo {
         var seen = new HashMap<String, Integer>();
         long n = drain(consumerProps(args, "verify", "read_committed"), OUT, r -> seen.merge(r.key(), 1, Integer::sum));
         long duplicates = seen.values().stream().filter(c -> c > 1).count();
-        new Table("output records (read_committed)", "distinct input keys", "keys seen twice", "input records")
-                .row(n, seen.size(), duplicates, records)
-                .print("result");
-        System.out.println("""
+        var result = new Table("output records (read_committed)", "distinct input keys", "keys seen twice", "input records")
+                .row(n, seen.size(), duplicates, records);
+        log.info("result\n{}", result);
+        log.info("""
                 the half-finished transaction of the crashed processor was aborted by the coordinator when the successor
-                called initTransactions(); its offsets were never committed, so the successor re-read those records and
-                produced them again inside a new transaction. Output = input, exactly once.
-                without transactions (offset commit separate from produce) the same crash yields duplicates in the output,
-                or, with commit-before-produce, lost records. That is chapter 08's territory.
-                """);
+                  called initTransactions(); its offsets were never committed, so the successor re-read those records and
+                  produced them again inside a new transaction. Output = input, exactly once.
+                  without transactions (offset commit separate from produce) the same crash yields duplicates in the output,
+                  or, with commit-before-produce, lost records. That is chapter 08's territory.""");
     }
 
     /** One consume-transform-produce instance. Stops (without committing) after {@code crashAfter} records. */
@@ -222,7 +223,7 @@ public final class ProducerTransactionsDemo implements Demo {
             while (System.currentTimeMillis() < deadline) {
                 ConsumerRecords<String, String> batch = consumer.poll(Duration.ofMillis(500));
                 if (!announced && !consumer.assignment().isEmpty()) {
-                    System.out.printf("%s owns partitions %s%n", name, consumer.assignment().stream()
+                    log.info("{} owns partitions {}", name, consumer.assignment().stream()
                             .map(tp -> String.valueOf(tp.partition())).sorted().toList());
                     announced = true;
                 }
@@ -238,7 +239,7 @@ public final class ProducerTransactionsDemo implements Demo {
                             break;
                         }
                         if (idlePolls % 10 == 0) {
-                            System.out.printf("%s: idle, input lag %d, assignment %s%n", name, lag, consumer.assignment());
+                            log.info("{}: idle, input lag {}, assignment {}", name, lag, consumer.assignment());
                         }
                     }
                     continue;
@@ -253,7 +254,7 @@ public final class ProducerTransactionsDemo implements Demo {
                         }
                         return new ProducerRecord<>(OUT, r.key(), r.value().toUpperCase());
                     });
-                    System.out.printf("%s txn #%d: %s -> %s%n", name, txn, ranges(batch, Long.MAX_VALUE),
+                    log.info("{} txn #{}: {} -> {}", name, txn, ranges(batch, Long.MAX_VALUE),
                             committed ? "committed" : "aborted, the batch will be read again");
                 } catch (SimulatedCrash crash) {
                     // Not a KafkaException, so processBatch neither committed nor aborted: the transaction is left open,
@@ -261,7 +262,7 @@ public final class ProducerTransactionsDemo implements Demo {
                     // the transaction). The consumer is closed cleanly only so that the group does not have to wait
                     // session.timeout.ms (45 s) for a dead member before the successor gets partitions.
                     // The producer object stays alive on purpose so the fencing check below can use it.
-                    System.out.printf("%s txn #%d: %s -> CRASH before commit (will be aborted)%n", name, txn, ranges(batch, crash.offset));
+                    log.info("{} txn #{}: {} -> CRASH before commit (will be aborted)", name, txn, ranges(batch, crash.offset));
                     consumer.close();
                     return processed;
                 }

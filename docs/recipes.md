@@ -1,6 +1,6 @@
 # Recipes · the code to copy
 
-Every chapter has a demo, and the demo is mostly measurement: seeding topics, timing, reading metrics, printing
+Every chapter has a demo, and the demo is mostly measurement: seeding topics, timing, reading metrics, logging
 tables. The part worth copying into your own service is small, and it lives in its own files:
 
 - **Code in a `recipe` package is the tweak. Everything else measures it.** Each demo calls its recipe, so the

@@ -16,6 +16,8 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -53,6 +55,8 @@ import java.util.function.LongSupplier;
 @Profile("spring-transactions")
 public class TransactionsDemo {
 
+    private static final Logger log = LoggerFactory.getLogger(TransactionsDemo.class);
+
     @Bean
     ApplicationRunner springTransactions(DemoSupport support, KafkaTemplate<String, String> template, ProducerFactory<String, String> producerFactory,
                                          OrderTransfer transfer, TxnProbe probe, ClientCapture capture, KafkaTransactionManager<?, ?> transactionManager) {
@@ -60,7 +64,7 @@ public class TransactionsDemo {
             long records = args.getLong("records", 1200);
             long sample = args.getLong("sample", 200);
             probe.crashAtRecord(args.getLong("crash", 800));
-            System.out.printf("KafkaTransactionManager bean present: %s (auto-configured because spring.kafka.producer.transaction-id-prefix is set); template.isTransactional()=%s%n%n",
+            log.info("KafkaTransactionManager bean present: {} (auto-configured because spring.kafka.producer.transaction-id-prefix is set); template.isTransactional()={}",
                     transactionManager.getClass().getSimpleName(), template.isTransactional());
 
             // ---- 1. executeInTransaction ------------------------------------------------------------------------
@@ -76,14 +80,14 @@ public class TransactionsDemo {
                     throw new IllegalStateException("abort by script");
                 });
             } catch (IllegalStateException expected) {
-                System.out.println("transaction 1: 10 sends, then " + expected.getMessage() + " -> rolled back (abort markers written)");
+                log.info("transaction 1: 10 sends, then {} -> rolled back (abort markers written)", expected.getMessage());
             }
             var committed10 = new ArrayList<ProducerRecord<String, String>>();
             for (int i = 0; i < 10; i++) {
                 committed10.add(new ProducerRecord<>(TopicsConfig.TXN_OUT, "committed-" + i, "visible to everyone"));
             }
             TxnRecipe.sendAll(template, committed10);   // <- the recipe under test
-            System.out.println("transaction 2: 10 sends, callback returned normally -> committed");
+            log.info("transaction 2: 10 sends, callback returned normally -> committed");
             var atomic = new Table("isolation.level", "records seen", "keys");
             for (String isolation : List.of("read_uncommitted", "read_committed")) {
                 List<ConsumerRecord<String, String>> seen = drain(TopicsConfig.TXN_OUT, isolation);
@@ -91,7 +95,7 @@ public class TransactionsDemo {
                 seen.forEach(r -> prefixes.add(r.key().substring(0, r.key().indexOf('-'))));
                 atomic.row(isolation, seen.size(), String.join(",", prefixes));
             }
-            atomic.print("1. executeInTransaction: one transaction aborted, one committed, the same topic read with both isolation levels");
+            log.info("1. executeInTransaction: one transaction aborted, one committed, the same topic read with both isolation levels\n{}", atomic);
 
             // ---- 2. a plain send() on a transactional template ---------------------------------------------------
             var plain = new Table("template", "allowNonTransactional", "send() outside a transaction");
@@ -104,19 +108,19 @@ public class TransactionsDemo {
             var lenient = TxnRecipe.nonTransactionalTemplate(producerFactory);   // same transactional factory, not a bean
             lenient.send(TopicsConfig.TXN_OUT, "plain", "sent by a non-transactional producer of the same factory").get();
             plain.row("new KafkaTemplate(sameFactory) + setAllowNonTransactional(true)", true, "succeeded: the factory hands out a non-transactional producer for this call");
-            plain.print("2. spring.kafka.template.allow-non-transactional (default false): a transactional template protects you from forgetting the transaction");
+            log.info("2. spring.kafka.template.allow-non-transactional (default false): a transactional template protects you from forgetting the transaction\n{}", plain);
 
             // ---- 3. @Transactional -----------------------------------------------------------------------------------
             transfer.transfer("t1", false);
             try {
                 transfer.transfer("t2", true);
             } catch (IllegalStateException expected) {
-                System.out.println("@Transactional transfer(t2): " + expected.getMessage() + " -> rolled back by the KafkaTransactionManager");
+                log.info("@Transactional transfer(t2): {} -> rolled back by the KafkaTransactionManager", expected.getMessage());
             }
             List<ConsumerRecord<String, String>> committed = drain(TopicsConfig.TXN_OUT, "read_committed");
             long t1 = committed.stream().filter(r -> r.key().startsWith("t1-")).count();
             long t2 = committed.stream().filter(r -> r.key().startsWith("t2-")).count();
-            System.out.printf("3. @Transactional: transfer t1 committed %d records, transfer t2 (threw) committed %d; read_committed sees %d records in total%n%n", t1, t2, committed.size());
+            log.info("3. @Transactional: transfer t1 committed {} records, transfer t2 (threw) committed {}; read_committed sees {} records in total", t1, t2, committed.size());
 
             // ---- 4. the listeners: consume-transform-produce, exactly once ----------------------------------------
             // spring.txn-out is NOT recreated here: a topic recreated under a live transactional producer leaves it with a
@@ -162,14 +166,16 @@ public class TransactionsDemo {
             support.stop("txn-per-batch");
             row(eos, "txn-per-batch (batch=\"true\", all " + total + ")", probe.batchRecords(), probe.batchCalls(), " (one per poll, incl. the rolled-back one)", batchMs, before);
 
-            probe.events().forEach(e -> System.out.println("   " + e));
-            eos.print("4. @KafkaListener + KafkaTemplate inside the container's transaction (max.poll.records=500); the batch listener crashes once at record %d".formatted(args.getLong("crash", 800)));
+            probe.events().forEach(e -> log.info("{}", e));
+            log.info("4. @KafkaListener + KafkaTemplate inside the container's transaction (max.poll.records=500); the batch listener crashes once at record {}\n{}",
+                    args.getLong("crash", 800), eos);
             // NOT "the transactional producers": part 2's setAllowNonTransactional(true) send made this same factory
             // create and cache a producer with transactional.id=null, and it registers with ProducerFactory.Listener
             // exactly like the transactional ones. The ids (factory.<client.id>) do not say which is which.
-            System.out.printf("   producers this factory created this run (ClientCapture ids = factory.<client.id>): %s%n", new TreeSet<>(capture.producers().keySet()));
-            System.out.println("   one of them is the non-transactional producer part 2 borrowed; a transactional factory hands one out for");
-            System.out.println("   allow-non-transactional sends and keeps it until the context closes.");
+            log.info("""
+                    producers this factory created this run (ClientCapture ids = factory.<client.id>): {}
+                      one of them is the non-transactional producer part 2 borrowed; a transactional factory hands one out for
+                      allow-non-transactional sends and keeps it until the context closes.""", new TreeSet<>(capture.producers().keySet()));
         });
     }
 

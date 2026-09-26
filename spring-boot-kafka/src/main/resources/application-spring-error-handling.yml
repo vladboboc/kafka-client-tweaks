@@ -20,5 +20,5 @@ spring:
 logging:
   level:
     # DEMO ONLY: in a service these ERRORs are exactly what you want to see. The retry-topic recoverer logs every
-    # hand-over to a retry topic or the DLT at ERROR, stack trace included; the demo prints its own timeline instead.
+    # hand-over to a retry topic or the DLT at ERROR, stack trace included; the demo logs its own timeline instead.
     org.springframework.kafka.retrytopic.DeadLetterPublishingRecovererFactory: "OFF"

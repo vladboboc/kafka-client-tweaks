@@ -3,6 +3,8 @@ package io.kafkatweaks.common;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -21,6 +23,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * the difference in the numbers is the effect of the configuration.
  */
 public final class Workload {
+
+    private static final Logger log = LoggerFactory.getLogger(Workload.class);
 
     /** The metrics every producer run reports, in the order they appear in the comparison tables. */
     public static final List<String> METRICS = List.of(
@@ -120,28 +124,28 @@ public final class Workload {
     }
 
     /** Throughput and latency of a single run. */
-    public static void printSummary(Result r) {
-        new Table("run", "records", "payload MB", "elapsed ms", "records/s", "MB/s", "ack p50 ms", "ack p99 ms", "ack max ms", "errors")
+    public static void logSummary(Result r) {
+        var summary = new Table("run", "records", "payload MB", "elapsed ms", "records/s", "MB/s", "ack p50 ms", "ack p99 ms", "ack max ms", "errors")
                 .row(r.label(), r.records(), r.bytes() / 1_048_576d, r.elapsedMs(), r.recordsPerSecond(),
-                        r.megabytesPerSecond(), r.p50Ms(), r.p99Ms(), r.maxMs(), r.errors())
-                .print("throughput & end-to-end ack latency");
+                        r.megabytesPerSecond(), r.p50Ms(), r.p99Ms(), r.maxMs(), r.errors());
+        log.info("throughput & end-to-end ack latency\n{}", summary);
     }
 
     /** Several runs side by side: throughput/latency first, then the producer metrics. */
-    public static void printComparison(List<Result> results) {
+    public static void logComparison(List<Result> results) {
         var summary = new Table("run", "records/s", "MB/s", "ack p50 ms", "ack p99 ms", "errors");
         results.forEach(r -> summary.row(r.label(), r.recordsPerSecond(), r.megabytesPerSecond(), r.p50Ms(), r.p99Ms(), r.errors()));
-        summary.print("throughput & latency per configuration");
+        log.info("throughput & latency per configuration\n{}", summary);
 
         var runs = new LinkedHashMap<String, Map<String, Double>>();
         results.forEach(r -> runs.put(r.label(), r.metrics()));
-        MetricsReport.printComparison("producer metrics per configuration (producer-metrics group)", METRICS, runs);
+        MetricsReport.logComparison("producer metrics per configuration (producer-metrics group)", METRICS, runs);
     }
 
-    public static void printPartitionSpread(Result r) {
+    public static void logPartitionSpread(Result r) {
         var table = new Table("partition", "records", "share");
         r.perPartition().forEach((p, n) -> table.row(p, n, "%.1f%%".formatted(100d * n / r.records())));
-        table.print("records per partition");
+        log.info("records per partition\n{}", table);
     }
 
     /**

@@ -20,6 +20,7 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * {@code containerFactory = "..."} and {@code filter = "..."} name resolves, no bean is ambiguous), the listener
  * containers are the expected ones, and the demo's runner exists. No broker: the {@code test} profile keeps KafkaAdmin
  * from creating topics, containers do not auto-start, and {@code tweaks.demo.run=false} turns the demo body into a no-op.
+ * The {@code catalogue} profile (a run without a known demo name) must start without a broker on its own settings.
  */
 class DemoProfilesTest {
 
@@ -54,6 +55,18 @@ class DemoProfilesTest {
             assertThat(context.getBean(KafkaListenerEndpointRegistry.class).getListenerContainerIds())
                     .containsExactlyInAnyOrderElementsOf(listenerIds);
             assertThat(context.getBeansOfType(ApplicationRunner.class)).isNotEmpty();
+        }
+    }
+
+    @Test
+    void theCatalogueProfileStartsWithoutABroker() {
+        // No "test" profile: application-catalogue.yml alone keeps KafkaAdmin away from the (unreachable) cluster.
+        try (ConfigurableApplicationContext context = new SpringApplicationBuilder(SpringTweaksApplication.class)
+                .profiles(Catalogue.PROFILE)
+                .properties("tweaks.demo.run=false", "spring.kafka.bootstrap-servers=localhost:1")
+                .run()) {
+            assertThat(context.getBean(KafkaListenerEndpointRegistry.class).getListenerContainerIds()).isEmpty();
+            assertThat(context.getBeansOfType(ApplicationRunner.class)).containsKey("listDemos");
         }
     }
 }

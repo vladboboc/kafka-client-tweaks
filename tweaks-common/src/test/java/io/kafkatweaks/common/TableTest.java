@@ -28,6 +28,16 @@ class TableTest {
     }
 
     @Test
+    void rendersAlignedColumnsWithoutATrailingLineBreak() {
+        var table = new Table("run", "records/s").row("defaults", 7432).row("zstd", 35_600);
+        assertThat(table.toString()).isEqualTo("""
+                | run      | records/s |
+                |----------|-----------|
+                | defaults |      7432 |
+                | zstd     |     35.6K |""");
+    }
+
+    @Test
     void rejectsRowsOfTheWrongWidth() {
         assertThatThrownBy(() -> new Table("a", "b").row(1))
                 .isInstanceOf(IllegalArgumentException.class);

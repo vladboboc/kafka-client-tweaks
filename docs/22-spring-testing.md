@@ -86,21 +86,22 @@ No Docker needed. `./mvnw -q verify` at the root runs all three modules (plain u
 ## What you should see
 
 ```
-Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 3.183 s -- in io.kafkatweaks.spring.ContextLoadsTest
-Tests run: 9, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.366 s -- in io.kafkatweaks.spring.DemoProfilesTest
-Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 7.298 s -- in io.kafkatweaks.spring.errors.DeadLetterTest
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.716 s -- in io.kafkatweaks.spring.ContextLoadsTest
+Tests run: 10, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.405 s -- in io.kafkatweaks.spring.DemoProfilesTest
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 5.626 s -- in io.kafkatweaks.spring.errors.DeadLetterTest
 Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.010 s -- in io.kafkatweaks.spring.errors.FailureScriptTest
-Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.013 s -- in io.kafkatweaks.spring.KafkaPropertiesMappingTest
-Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 7.087 s -- in io.kafkatweaks.spring.share.ShareListenerTest
-Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 3.595 s -- in io.kafkatweaks.spring.TemplateListenerRoundTripTest
-Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.013 s -- in io.kafkatweaks.spring.txn.MockProducerFactoryTest
-Tests run: 23, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.010 s -- in io.kafkatweaks.spring.KafkaPropertiesMappingTest
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 7.056 s -- in io.kafkatweaks.spring.share.ShareListenerTest
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.961 s -- in io.kafkatweaks.spring.TemplateListenerRoundTripTest
+Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.018 s -- in io.kafkatweaks.spring.txn.MockProducerFactoryTest
+Tests run: 24, Failures: 0, Errors: 0, Skipped: 0
 
-spring-boot-kafka .................................. SUCCESS [ 28.099 s]
+spring-boot-kafka .................................. SUCCESS [ 24.675 s]
 ```
 
-(`./mvnw verify` without `-q` prints the lines; the whole module, embedded brokers included, takes about 28 s on a
-laptop, most of it JVM, context and broker start-up. `DemoProfilesTest`'s eight contexts take 2.4 s together.)
+(`./mvnw verify` without `-q` prints the lines; the whole module, embedded brokers included, takes about 25 s on a
+laptop, most of it JVM, context and broker start-up. `DemoProfilesTest`'s nine contexts, the eight chapters and the
+catalogue, take 2.4 s together.)
 
 ## Reading the numbers
 
@@ -128,7 +129,9 @@ laptop, most of it JVM, context and broker start-up. `DemoProfilesTest`'s eight 
   `SpringTweaksApplication` with `<profile>,test` and `tweaks.demo.run=false` (`DemoSupport` then hands out a no-op
   runner instead of the demo body) and asserts the exact listener container ids, the `@RetryableTopic` ones
   (`errors-retryable-retry-1000` … `errors-retryable-dlt`) included. It is what made moving the beans into the
-  `recipe` packages safe.
+  `recipe` packages safe. Its last test starts the `catalogue` profile (a run without a demo name, which lists the
+  demos) without the `test` profile and with `spring.kafka.bootstrap-servers=localhost:1`: the list must never need
+  a broker, and `application-catalogue.yml` alone has to guarantee that.
 - **`TemplateListenerRoundTripTest`: start the container yourself.** `spring.kafka.listener.auto-startup=false`
   (application.yml, chapter 16) applies to tests as well, so the test starts the container from the registry and
   waits with `ContainerTestUtils.waitForAssignment(container, 3)` before sending; without the wait the first records

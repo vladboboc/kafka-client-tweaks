@@ -15,6 +15,8 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.clients.producer.RoundRobinPartitioner;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
@@ -40,6 +42,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class ProducerPartitioningDemo implements Demo {
 
+    private static final Logger log = LoggerFactory.getLogger(ProducerPartitioningDemo.class);
     private static final String TOPIC = "tweaks.partitioning";
 
     @Override
@@ -54,7 +57,7 @@ public final class ProducerPartitioningDemo implements Demo {
         }
         // The demo's own properties, not a bare default producer: this table has to show what the runs below
         // actually use (linger.ms=20, any dotted override from the command line), with the "<- changed" markers.
-        Knobs.printProducer(props(args, "knobs", Map.of()), ProducerConfig.PARTITIONER_CLASS_CONFIG,
+        Knobs.logProducer(props(args, "knobs", Map.of()), ProducerConfig.PARTITIONER_CLASS_CONFIG,
                 ProducerConfig.PARTITIONER_ADAPTIVE_PARTITIONING_ENABLE_CONFIG,
                 ProducerConfig.PARTITIONER_AVAILABILITY_TIMEOUT_MS_CONFIG, ProducerConfig.PARTITIONER_IGNORE_KEYS_CONFIG,
                 ProducerConfig.LINGER_MS_CONFIG, ProducerConfig.BATCH_SIZE_CONFIG);
@@ -63,18 +66,20 @@ public final class ProducerPartitioningDemo implements Demo {
         int rate = args.getInt("rate", 3000);
         long pacedRecords = Math.min(records, (long) rate * 8);
         Workload.warmUp(TOPIC);
-        System.out.printf("%n1. null keys at a steady %d records/s (so batches close on linger.ms, not on batch.size):%n", rate);
-        System.out.println("   the default sticky partitioner fills ONE partition's batch until linger expires, then moves to another;");
-        System.out.println("   RoundRobinPartitioner spreads consecutive records over all partitions, so each batch gets 1/6 of the records.\n");
+        log.info("""
+                1. null keys at a steady {} records/s (so batches close on linger.ms, not on batch.size):
+                   the default sticky partitioner fills ONE partition's batch until linger expires, then moves to another;
+                   RoundRobinPartitioner spreads consecutive records over all partitions, so each batch gets 1/6 of the records.""", rate);
         var sticky = Workload.run("sticky (default)", props(args, "sticky", Map.of()), TOPIC, pacedRecords, size, Workload.Payload.JSON, 0, rate);
         var roundRobin = Workload.run("round-robin", props(args, "rr", KeyPartitioning.roundRobin()), TOPIC, pacedRecords, size, Workload.Payload.JSON, 0, rate);
-        Workload.printComparison(List.of(sticky, roundRobin));
-        Workload.printPartitionSpread(sticky);
-        System.out.println("   (records/s is the pacing rate for both; look at batch-size-avg, records-per-request-avg and request-rate)");
+        Workload.logComparison(List.of(sticky, roundRobin));
+        Workload.logPartitionSpread(sticky);
+        log.info("(records/s is the pacing rate for both; look at batch-size-avg, records-per-request-avg and request-rate)");
 
         // ---- 2. keyed records --------------------------------------------------------------------
-        System.out.printf("%n2. keyed records: partition = murmur2(key) %% partitions. Same key, same partition, always (unless the%n"
-                + "   partition count changes). %d keys over 6 partitions is not uniform, and a hot key is a hot partition.%n", keys);
+        log.info("""
+                2. keyed records: partition = murmur2(key) % partitions. Same key, same partition, always (unless the
+                   partition count changes). {} keys over 6 partitions is not uniform, and a hot key is a hot partition.""", keys);
         spread("hash of %d keys".formatted(keys), props(args, "keyed", Map.of()), records, size, i -> Payloads.key(i, keys));
         spread("hot key: %d%% of records share one key".formatted(hotPercent), props(args, "hot", Map.of()), records, size,
                 i -> (i % 100) < hotPercent ? "customer-hot" : Payloads.key(i, keys));
@@ -83,17 +88,15 @@ public final class ProducerPartitioningDemo implements Demo {
                 i -> Payloads.key(i, keys));
 
         // ---- 3. custom partitioner --------------------------------------------------------------
-        System.out.println("\n3. a custom Partitioner: keys starting with \"vip-\" go to partition 0, everything else is hashed over 1..N-1.");
+        log.info("3. a custom Partitioner: keys starting with \"vip-\" go to partition 0, everything else is hashed over 1..N-1.");
         spread("TenantPartitioner", props(args, "custom", KeyPartitioning.partitioner(TenantPartitioner.class)),
                 records, size, i -> (i % 10 == 0) ? "vip-" + (i % 3) : Payloads.key(i, keys));
 
-        System.out.println("""
-
+        log.info("""
                 adaptive partitioning (partitioner.adaptive.partitioning.enable=true, default): for null-key records the
-                sticky partitioner prefers partitions whose leader is answering fast; a slow broker gets fewer records.
-                partitioner.availability.timeout.ms=N (default 0 = off) goes further and stops sending to a partition
-                whose leader has not accepted anything for N ms. Neither applies to keyed records.
-                """);
+                  sticky partitioner prefers partitions whose leader is answering fast; a slow broker gets fewer records.
+                  partitioner.availability.timeout.ms=N (default 0 = off) goes further and stops sending to a partition
+                  whose leader has not accepted anything for N ms. Neither applies to keyed records.""");
     }
 
     private interface KeyFn {
@@ -122,9 +125,8 @@ public final class ProducerPartitioningDemo implements Demo {
         }
         var table = new Table("partition", "records", "share");
         new TreeMap<>(perPartition).forEach((p, n) -> table.row(p, n, "%.1f%%".formatted(100d * n / records)));
-        table.print(label);
-        System.out.printf("   distinct keys: %d, keys that landed on more than one partition: %d%n",
-                perKeyPartition.size(), keyMovedPartition.size());
+        log.info("{}\n{}\ndistinct keys: {}, keys that landed on more than one partition: {}",
+                label, table, perKeyPartition.size(), keyMovedPartition.size());
     }
 
     private static Properties props(Args args, String clientId, Map<String, ?> overrides) {

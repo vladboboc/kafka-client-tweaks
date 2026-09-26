@@ -55,7 +55,21 @@ Two kinds of arguments:
 Point the demos at another cluster with `-Dbootstrap.servers=host:port` (or the `BOOTSTRAP_SERVERS` env var)
 and `-Dschema.registry.url=…` (`SCHEMA_REGISTRY_URL`).
 
-Kafka's own client logging is kept at WARN so the tables stay readable; `-Dkafka.log=INFO` turns it up.
+Everything a demo reports is logged through SLF4J and Logback, the pair Spring Boot uses by default:
+[logback.xml](../plain-clients/src/main/resources/logback.xml) configures the plain module, `logging.*` in
+[application.yml](../spring-boot-kafka/src/main/resources/application.yml) the Spring one, with the same pattern. Each
+message starts with the time, the level and the class that logged it; a table is one multi-line message, so its rows
+stay aligned under that first line:
+
+```
+14:06:06.883 INFO  Workload - throughput & end-to-end ack latency
+| run      | records | payload MB | elapsed ms | records/s | MB/s | ack p50 ms | ack p99 ms | ack max ms | errors |
+|----------|---------|------------|------------|-----------|------|------------|------------|------------|--------|
+| baseline |   20.0K |      10.91 |       2547 |      7852 | 4.29 |       1322 |       2128 |       2141 |      0 |
+```
+
+The chapters' "What you should see" excerpts leave the time / level / logger prefix out. Kafka's own client logging
+is kept at WARN so the tables stay readable; `-Dkafka.log=INFO` turns it up.
 
 `./mvnw` resolves to `mvnw.cmd` automatically in both `cmd.exe` and PowerShell, so no path change is needed on
 Windows. PowerShell has one specific catch, though: it splits a `-D` flag at the first `.` unless the *whole*
@@ -126,9 +140,9 @@ The demos share the helpers of the `tweaks-common` module (package `io.kafkatwea
 | Helper | Purpose |
 |---|---|
 | `Env` | where the cluster is; base `Properties` for producer / consumer / admin |
-| `Knobs` | prints the configs a chapter is about: value for this run next to the client default |
+| `Knobs` | logs the configs a chapter is about: value for this run next to the client default |
 | `Workload` | the one workload every producer chapter reuses, so only the configuration differs between runs |
-| `MetricsReport` | reads `producer.metrics()` / `consumer.metrics()` and prints the ones that matter |
+| `MetricsReport` | reads `producer.metrics()` / `consumer.metrics()` and logs the ones that matter |
 | `Topics` | AdminClient chores: create topics with a chosen partition count, reset a group, show assignments, lag, ISR |
 | `Seed` | fills a topic for the consumer chapters, only if it does not already hold enough records |
 | `Payloads`, `Order`, `JsonSerde` | test data: compressible JSON, incompressible random text, a small domain record |

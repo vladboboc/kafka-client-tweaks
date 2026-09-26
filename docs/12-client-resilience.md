@@ -73,7 +73,7 @@ measurement (including stopping and starting the broker).
 ./mvnw -q -pl plain-clients -am compile exec:java -Dexec.args="client-resilience"
 ```
 
-Part 2 stops broker `kafka-2` for ~8 s. Follow the printed instructions or pass `broker-control=docker`.
+Part 2 stops broker `kafka-2` for ~8 s. Follow the instructions in the log or pass `broker-control=docker`.
 Arguments: `rate=1500`, `seconds=24`.
 
 ## What you should see
@@ -127,7 +127,7 @@ exactly what it is asked to.)
 **4. Telemetry.** The producer asks for its client instance id (`clientInstanceId(Duration)`). The stack
 has a subscription for all clients (`kafka-client-metrics --describe --name tweaks-all-clients`), but the
 handshake runs in the background on the sender thread, and a client that has lived for half a second
-usually prints `not negotiated yet (null)`. A long-running client gets a stable UUID that appears in broker
+usually logs `not negotiated yet (null)`. A long-running client gets a stable UUID that appears in broker
 logs and metrics.
 
 ## Reading the numbers

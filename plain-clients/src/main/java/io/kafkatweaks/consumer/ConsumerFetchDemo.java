@@ -18,6 +18,8 @@ import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.LinkedHashMap;
@@ -41,6 +43,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class ConsumerFetchDemo implements Demo {
 
+    private static final Logger log = LoggerFactory.getLogger(ConsumerFetchDemo.class);
     private static final String TOPIC = "tweaks.fetch";
 
     static final Map<String, Map<String, ?>> PRESETS = new LinkedHashMap<>();
@@ -70,29 +73,28 @@ public final class ConsumerFetchDemo implements Demo {
             topics.recreate(TOPIC, 3);
             total = Seed.ensure(topics, TOPIC, 3, records, size, Map.of());
         }
-        Knobs.printConsumer(Env.consumer("knobs", "knobs"),
+        Knobs.logConsumer(Env.consumer("knobs", "knobs"),
                 ConsumerConfig.MAX_POLL_RECORDS_CONFIG, ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG,
                 ConsumerConfig.FETCH_MIN_BYTES_CONFIG, ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG,
                 ConsumerConfig.FETCH_MAX_BYTES_CONFIG, ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG,
                 ConsumerConfig.RECEIVE_BUFFER_CONFIG, ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG);
 
-        System.out.println("\n1. catching up on %d records under each preset (fresh group each time, auto.offset.reset=earliest)%n".formatted(total));
+        log.info("1. catching up on {} records under each preset (fresh group each time, auto.offset.reset=earliest)", total);
         catchUp(args, "warm-up", Map.of(), total);   // JIT warm-up, discarded: the first measured preset must not pay for it
         var table = new Table("preset", "elapsed ms", "records/s", "MB/s", "polls", "records/poll", "fetch-size-avg", "records/fetch", "fetch-latency-avg", "fetch-rate");
         for (String name : runs) {
             Map<String, ?> preset = PRESETS.get(name);
             if (preset == null) {
-                System.err.println("unknown preset '" + name + "', known: " + PRESETS.keySet());
+                log.warn("unknown preset '{}', known: {}", name, PRESETS.keySet());
                 continue;
             }
             table.row(catchUp(args, name, preset, total));
         }
-        table.print("catch-up throughput");
-        System.out.println("""
-                  max.poll.records only shapes how many records ONE poll() hands back; the fetch size is decided by the
+        log.info("catch-up throughput\n{}", table);
+        log.info("""
+                max.poll.records only shapes how many records ONE poll() hands back; the fetch size is decided by the
                   *.fetch.bytes settings and the fetcher runs ahead of poll(). Small polls cost little as long as the
-                  fetcher keeps up; tiny fetches (64K) cost a request per 64 KB and show up as fetch-rate and latency.
-                """);
+                  fetcher keeps up; tiny fetches (64K) cost a request per 64 KB and show up as fetch-rate and latency.""");
 
         slowHandler(args);
         lowTraffic(args);
@@ -137,23 +139,21 @@ public final class ConsumerFetchDemo implements Demo {
     // ------------------------------------------------------------------ 2. slow handler
 
     private static void slowHandler(Args args) {
-        System.out.println("""
-
+        log.info("""
                 2. the slow handler. poll() must be called again within max.poll.interval.ms (default 300000) or the
                    consumer is considered dead: it leaves the group, its partitions are reassigned, and its next commit
-                   fails. Here the budget is squeezed to 3000 ms and every record "takes" 10 ms.
-                """);
+                   fails. Here the budget is squeezed to 3000 ms and every record "takes" 10 ms.""");
         var table = new Table("max.poll.records", "max.poll.interval.ms", "ms per record", "outcome");
         table.row(slowRun(args, 500, 3000, 10));
         table.row(slowRun(args, 100, 3000, 10));
-        table.print("slow handler runs (each processes 3 polls then stops)");
-        System.out.println("""
+        log.info("slow handler runs (each processes 3 polls then stops)\n{}", table);
+        log.info("""
+                three ways out
                   fix 1: lower max.poll.records so that records x processing time fits in max.poll.interval.ms
                   fix 2: raise max.poll.interval.ms (the honest budget for your slowest batch)
                   fix 3: hand the work to other threads and keep polling: chapter 10
                   (with the classic protocol the same failure surfaces as a rebalance; session.timeout.ms is about the
-                   heartbeat thread being alive, max.poll.interval.ms is about YOUR thread making progress)
-                """);
+                   heartbeat thread being alive, max.poll.interval.ms is about YOUR thread making progress)""");
     }
 
     private static Object[] slowRun(Args args, int maxPollRecords, int maxPollIntervalMs, int msPerRecord) {
@@ -199,12 +199,10 @@ public final class ConsumerFetchDemo implements Demo {
     // ------------------------------------------------------------------ 3. low traffic
 
     private static void lowTraffic(Args args) throws Exception {
-        System.out.println("""
-
+        log.info("""
                 3. low traffic: a trickle producer sends ~200 records/s. fetch.min.bytes tells the broker not to answer a fetch
                    until that many bytes are available, fetch.max.wait.ms caps the wait. That turns many tiny fetches into few
-                   full ones, at the price of latency.
-                """);
+                   full ones, at the price of latency.""");
         var stop = new AtomicBoolean(false);
         Thread trickle = Thread.ofVirtual().start(() -> {
             var props = Env.producer("fetch-trickle");
@@ -221,17 +219,17 @@ public final class ConsumerFetchDemo implements Demo {
             var table = new Table("fetch.min.bytes", "fetch.max.wait.ms", "records", "polls", "non-empty polls", "records/fetch", "fetch-latency-avg ms", "fetch-rate /s");
             table.row(tailRun(args, 1, 500, 8));
             table.row(tailRun(args, 64 * 1024, 2000, 8));
-            table.print("tailing the trickle for 8 s");
+            log.info("tailing the trickle for 8 s\n{}", table);
         } finally {
             stop.set(true);
             trickle.join();
         }
-        System.out.println("""
+        log.info("""
+                reading it
                   fetch.min.bytes=1 (default): the broker answers as soon as there is anything, so each fetch carries a
                   handful of records and the consumer issues many requests.
                   fetch.min.bytes=64K + fetch.max.wait.ms=2000: fetches return every ~2 s with everything that arrived,
-                  ~1 request per 2 s. End-to-end latency grew by up to 2 s. Pick the wait you can afford.
-                """);
+                  ~1 request per 2 s. End-to-end latency grew by up to 2 s. Pick the wait you can afford.""");
     }
 
     private static Object[] tailRun(Args args, int fetchMinBytes, int fetchMaxWaitMs, int seconds) {
