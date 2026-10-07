@@ -250,11 +250,11 @@ public final class ProducerTransactionsDemo implements Demo {
                     // The recipe under test: send the transformed batch and its input offsets in one transaction.
                     boolean committed = ExactlyOnceProcessor.processBatch(consumer, producer, batch, r -> {
                         if (++processed >= crashAfter) {
-                            throw new SimulatedCrash(r.offset());
+                            throw new SimulatedCrash(r.partition(), r.offset());
                         }
                         return new ProducerRecord<>(OUT, r.key(), r.value().toUpperCase());
                     });
-                    log.info("{} txn #{}: {} -> {}", name, txn, ranges(batch, Long.MAX_VALUE),
+                    log.info("{} txn #{}: {} -> {}", name, txn, ranges(batch, null),
                             committed ? "committed" : "aborted, the batch will be read again");
                 } catch (SimulatedCrash crash) {
                     // Not a KafkaException, so processBatch neither committed nor aborted: the transaction is left open,
@@ -262,7 +262,7 @@ public final class ProducerTransactionsDemo implements Demo {
                     // the transaction). The consumer is closed cleanly only so that the group does not have to wait
                     // session.timeout.ms (45 s) for a dead member before the successor gets partitions.
                     // The producer object stays alive on purpose so the fencing check below can use it.
-                    log.info("{} txn #{}: {} -> CRASH before commit (will be aborted)", name, txn, ranges(batch, crash.offset));
+                    log.info("{} txn #{}: {} -> CRASH before commit (will be aborted)", name, txn, ranges(batch, crash));
                     consumer.close();
                     return processed;
                 }
@@ -272,17 +272,22 @@ public final class ProducerTransactionsDemo implements Demo {
             return processed;
         }
 
-        /** "p0[0..499] p2[0..152]": which input offsets a batch covered, capped at {@code upTo} for the crashed batch. */
-        private static String ranges(ConsumerRecords<String, String> batch, long upTo) {
+        /**
+         * "p0[0..499] p2[0..152]": which input offsets a batch covered. For the crashed batch ({@code crash} not null)
+         * the list ends at the record the transform threw on: partitions are processed in batch order, so the ones
+         * after the crash partition were never reached.
+         */
+        private static String ranges(ConsumerRecords<String, String> batch, SimulatedCrash crash) {
             var sb = new StringBuilder();
             for (TopicPartition tp : batch.partitions()) {
                 var recs = batch.records(tp);
                 long first = recs.getFirst().offset();
-                long last = Math.min(recs.getLast().offset(), upTo);
-                if (last < first) {
-                    continue;
-                }
+                boolean crashedHere = crash != null && tp.partition() == crash.partition;
+                long last = crashedHere ? crash.offset : recs.getLast().offset();
                 sb.append("p").append(tp.partition()).append('[').append(first).append("..").append(last).append("] ");
+                if (crashedHere) {
+                    break;
+                }
             }
             return sb.toString().trim();
         }
@@ -306,10 +311,12 @@ public final class ProducerTransactionsDemo implements Demo {
 
     /** The demo's stand-in for a JVM crash: thrown from the transform, so the transaction is left open. */
     private static final class SimulatedCrash extends RuntimeException {
+        final int partition;
         final long offset;
 
-        SimulatedCrash(long offset) {
-            super("simulated crash at input offset " + offset, null, false, false);
+        SimulatedCrash(int partition, long offset) {
+            super("simulated crash at input p" + partition + " offset " + offset, null, false, false);
+            this.partition = partition;
             this.offset = offset;
         }
     }

@@ -40,8 +40,8 @@ public final class LowLatencyProducer {
 
     /**
      * Fetch the topics' metadata before the first real record, so that record does not pay for it. Call it right after
-     * creating the producer, e.g. at application startup. In chapter 01's run the first send took 88 ms and the second
-     * 13 ms; the metadata round trip is part of that difference.
+     * creating the producer, e.g. at application startup. Chapter 01's demo times two synchronous sends: the first is
+     * several times slower than the second (~15 ms), and the metadata round trip is part of that difference.
      */
     public static void warmUp(Producer<?, ?> producer, String... topics) {
         for (String topic : topics) {

@@ -1,6 +1,10 @@
 # 09 · Group protocol and rebalancing
 
-**Demo:** `consumer-rebalance` · [ConsumerRebalanceDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerRebalanceDemo.java) · **Recipes:** [GroupProtocols.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/GroupProtocols.java), [CommitOnRevoke.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/CommitOnRevoke.java)
+> **Level:** Practitioner · **Read first:** [08](08-consumer-offsets.md) · **Time:** ~5 min read, ~3 min run · [Glossary](glossary.md)
+>
+> **Demo:** `consumer-rebalance` (`./demo 09`) · [ConsumerRebalanceDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerRebalanceDemo.java) · **Recipes:** [GroupProtocols.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/GroupProtocols.java), [CommitOnRevoke.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/CommitOnRevoke.java) · **In Spring:** [14](14-spring-boot-setup.md)
+>
+> **In one sentence:** Eager `classic` + `RangeAssignor` took all 6 partitions from A when B joined; the KIP-848 `consumer` protocol took 3 and let A keep consuming; static membership let a restarting member keep its partitions.
 
 ## The problem
 
@@ -148,7 +152,8 @@ The same choreography runs per scenario on a 6-partition topic: A joins, B joins
 24.78s  B assigned [3,4]                <- same partitions, A and C never noticed
 ```
 
-**Summary across scenarios** (partitions A had to give up when one member joined):
+**Summary across scenarios** (partitions A had to give up when one member joined; the demo also logs "rebalances
+seen by A" and "A's rebalance-latency-avg ms", left out here):
 
 ```
 | scenario            | partitions A lost when B joined | partitions A lost when C joined | A's rebalance-total |
@@ -159,11 +164,16 @@ The same choreography runs per scenario on a 6-partition topic: A joins, B joins
 | consumer-static     |                               3 |                               1 |                   3 |
 ```
 
+<details>
+<summary>Deep dive: why the two protocols move at different speeds</summary>
+
 Note the pace of the consumer protocol on this stack: a revoked partition is picked up by its new owner
 about 4 s later, because members learn of changes through heartbeats and the broker's
 `group.consumer.heartbeat.interval.ms` is 5 s. Lower it on the broker for snappier moves at the cost of
 more heartbeat traffic. The classic protocol's ~2 s gaps are the JoinGroup round (bounded by
 `max.poll.interval.ms` in the worst case), during which eager members process nothing at all.
+
+</details>
 
 ## Reading the timelines
 
@@ -187,6 +197,15 @@ more heartbeat traffic. The classic protocol's ~2 s gaps are the JoinGroup round
   or heartbeats inside the consumer protocol); the second is "is *your* thread making progress" (chapter 07).
   A slow handler trips the second, never the first.
 
+## Key takeaways
+
+- **Set `group.protocol=consumer` on new applications.** A gave up 3 partitions when B joined instead of all 6
+  (eager `classic` + `RangeAssignor`). Stuck on `classic`: `CooperativeStickyAssignor`.
+- **Static membership for stateful consumers and rolling restarts.** With `group.instance.id`, B's restart moved
+  nothing and B got `[3,4]` back; the price is idle partitions if it never returns.
+- **Commit in `onPartitionsRevoked`, and override `onPartitionsLost`.** Revoked is the last moment you own the
+  partitions; lost ones may already belong to another member, so commit nothing there.
+
 ## When to use what
 
 | Situation | Setting |
@@ -197,3 +216,7 @@ more heartbeat traffic. The classic protocol's ~2 s gaps are the JoinGroup round
 | stateful consumer, expensive local state, rolling restarts | `group.instance.id=<stable per instance>` |
 | commit before losing a partition | `ConsumerRebalanceListener.onPartitionsRevoked` → `commitSync(offsets of the revoked partitions)` |
 | frequent rebalances in the metrics | look for slow handlers (`max.poll.interval.ms`), crashlooping pods, and autoscalers that add/remove members too eagerly |
+
+---
+
+← [08 · Offsets and delivery guarantees](08-consumer-offsets.md) · [Index](README.md) · [10 · Scaling and parallelism](10-consumer-parallel.md) →

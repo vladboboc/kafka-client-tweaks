@@ -1,6 +1,10 @@
 # 08 · Offsets and delivery guarantees
 
-**Demo:** `consumer-offsets` · [ConsumerOffsetsDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerOffsetsDemo.java) · **Recipes:** [AtLeastOnceConsumer.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/AtLeastOnceConsumer.java), [Replay.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/Replay.java)
+> **Level:** Essentials · **Read first:** [07](07-consumer-fetch.md) · **Time:** ~5 min read, ~1 min run · [Glossary](glossary.md)
+>
+> **Demo:** `consumer-offsets` (`./demo 08`) · [ConsumerOffsetsDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerOffsetsDemo.java) · **Recipes:** [AtLeastOnceConsumer.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/AtLeastOnceConsumer.java), [Replay.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/Replay.java) · **In Spring:** [16](16-spring-listeners-acks.md), [18](18-spring-error-handling-retry.md)
+>
+> **In one sentence:** The committed offset is a consumer's only durable state: commit before handling lost 266 records in a crash, after handling redelivered 234, and after handling plus an idempotent handler lost and duplicated nothing.
 
 ## The problem
 
@@ -138,6 +142,15 @@ samples `position()` and `committed()` every second:
 - **`offsetsForTimes` works on record timestamps** (`CreateTime` by default, set by the producer), which
   is what makes "replay the last hour" a one-liner, and what makes it wrong if producers have bad clocks.
 
+## Key takeaways
+
+- **Where the commit sits decides the guarantee.** Before handling is at-most-once (266 lost), after handling is
+  at-least-once (234 processed twice); the second is Kafka's default contract.
+- **Effectively-once needs an idempotent handler with durable memory.** Store the processed id in the same
+  transaction as the side effect; an in-memory set would not survive the crash.
+- **Auto-commit trails by up to 5 s and is safe only on the poll thread.** Hand records to another thread and it
+  commits unfinished work: at-most-once by accident.
+
 ## When to use what
 
 | Need | Do |
@@ -149,3 +162,7 @@ samples `position()` and `committed()` every second:
 | skip a poison record | `seek(tp, record.offset() + 1)`, and write the record somewhere first |
 | brand-new group must not skip history | `auto.offset.reset=earliest` |
 | strictness over convenience | `auto.offset.reset=none` and an operational runbook for seeking |
+
+---
+
+← [07 · The poll loop and fetch tuning](07-consumer-fetch.md) · [Index](README.md) · [09 · Group protocol and rebalancing](09-consumer-rebalance.md) →

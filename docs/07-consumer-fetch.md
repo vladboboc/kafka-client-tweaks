@@ -1,6 +1,10 @@
 # 07 · The poll loop and fetch tuning
 
-**Demo:** `consumer-fetch` · [ConsumerFetchDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerFetchDemo.java) · **Recipe:** [FetchTuning.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/FetchTuning.java)
+> **Level:** Essentials · **Read first:** [Primer](primer.md) · **Time:** ~5 min read, ~2 min run · [Glossary](glossary.md)
+>
+> **Demo:** `consumer-fetch` (`./demo 07`) · [ConsumerFetchDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerFetchDemo.java) · **Recipe:** [FetchTuning.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/FetchTuning.java) · **In Spring:** [17](17-spring-concurrency-batch.md)
+>
+> **In one sentence:** Fetch size, not `max.poll.records`, moves catch-up throughput (92.0K → 120.4K records/s with `catchUp()`), `fetch.min.bytes` tames a trickle, and a slow handler must fit its poll inside `max.poll.interval.ms`.
 
 ## The problem
 
@@ -147,6 +151,15 @@ compression), a fresh group per preset:
   records; dropping them moves the position past them, and the next commit declares them processed. The
   transactions demo of chapter 06 had exactly this bug in an early version and lost a batch per restart.
 
+## Key takeaways
+
+- **Fetch size moves throughput, `max.poll.records` does not.** 50 or 500 records per poll ran at the same rate;
+  64 KB fetches halved it; `catchUp()` reached 120.4K records/s.
+- **A poll must fit inside `max.poll.interval.ms`.** Keep `records × time per record` below it: 500 × 10 ms overran
+  3 s and was kicked out, 100 per poll was fine.
+- **`fetch.min.bytes` + `fetch.max.wait.ms` are for low traffic.** On a trickle they cut 35 fetches/s to 0.33, at
+  the cost of up to `fetch.max.wait.ms` of added latency.
+
 ## When to use what
 
 | Situation | Setting |
@@ -157,3 +170,7 @@ compression), a fresh group per preset:
 | consumer with many partitions, tight memory | lower `max.partition.fetch.bytes` (memory ≈ partitions × this), accept more fetch requests |
 | poll timeouts in the logs | shrink the batch (`max.poll.records`), then measure; do not just raise `max.poll.interval.ms` to an hour |
 | WAN or high-latency link | `receive.buffer.bytes=-1` (OS autotuning) or a few MB |
+
+---
+
+← [06 · Transactions and exactly-once](06-producer-transactions.md) · [Index](README.md) · [08 · Offsets and delivery guarantees](08-consumer-offsets.md) →

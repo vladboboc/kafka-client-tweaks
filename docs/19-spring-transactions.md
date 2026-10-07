@@ -1,6 +1,10 @@
 # 19 · Transactions in Spring
 
-**Demo:** `spring-transactions` · [TransactionsDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/TransactionsDemo.java) · [application-spring-transactions.yml](../spring-boot-kafka/src/main/resources/application-spring-transactions.yml) · **Recipes:** [TxnRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/recipe/TxnRecipe.java), [OrderTransfer.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/recipe/OrderTransfer.java), [UppercaseProcessor.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/recipe/UppercaseProcessor.java)
+> **Level:** Deep dive · **Read first:** [06](06-producer-transactions.md), [16](16-spring-listeners-acks.md) · **Time:** ~10 min read, ~1.5 min run · [Glossary](glossary.md)
+>
+> **Demo:** `spring-transactions` (`./demo 19`) · [TransactionsDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/TransactionsDemo.java) · [application-spring-transactions.yml](../spring-boot-kafka/src/main/resources/application-spring-transactions.yml) · **Recipes:** [TxnRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/recipe/TxnRecipe.java), [OrderTransfer.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/recipe/OrderTransfer.java), [UppercaseProcessor.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/txn/recipe/UppercaseProcessor.java) · **Plain-client version:** [06](06-producer-transactions.md)
+>
+> **In one sentence:** One property, `transaction-id-prefix`, gives you chapter 06's exactly-once machinery; a batch listener then commits one transaction per poll: 1 200 records in 755 ms, a crash mid-batch, 0 duplicates.
 
 ## The problem
 
@@ -162,15 +166,31 @@ spring.txn-in-1@475); the whole poll's transaction is rolled back and re-fetched
   records are in the log as aborted, `read_committed` never sees them. With a JDBC transaction manager in the
   same application, the documented pattern is an outer database transaction and an inner Kafka one, so the
   Kafka commit happens last and a database failure aborts the records.
+
+<details>
+<summary>Deep dive: two traps the demo hit (stale topic id, slow stop)</summary>
+
 - **Two things the demo learned the hard way.** A topic recreated under a *live* transactional producer left
   the producer with a stale topic id; its next `sendOffsetsToTransaction` never returned (a thread dump showed it
   parked in `TransactionalRequestResult.await`). And `stop()` on a container in a per-record transaction loop
   returned after the 10 s shutdown timeout while the consumer kept committing; `immediate-stop=true` fixed the
   hand-over. Both are why `spring.txn-out` is created once at the start and the record listener is stopped
   record by record.
+
+</details>
+
 - **Isolation is a consumer decision.** The listeners here run with `isolation-level: read_committed`; the
   verification consumers show what a downstream service with the default would see. Exactly-once ends at the
   first `read_uncommitted` reader, exactly as chapter 06 said.
+
+## Key takeaways
+
+- **One property switches it all on.** `transaction-id-prefix` makes the producer factory transactional and wires a
+  `KafkaTransactionManager` into the containers; use a unique prefix per instance.
+- **A record listener is one transaction per record.** 200 records took 33 s at ~165 ms each; a batch listener did
+  1 200 in 755 ms with 5 transactions.
+- **Exactly-once output, at-least-once processing.** After the crash `read_committed` saw 1 200 records and 0
+  duplicates, `read_uncommitted` 1 676; downstream consumers must choose `read_committed`.
 
 ## When to use what
 
@@ -185,3 +205,7 @@ spring.txn-in-1@475); the whole poll's transaction is rolled back and re-fetched
 | idle transactional producers get fenced | `setMaxAge` below `transactional.id.expiration.ms` |
 | retries on failure | the after-rollback processor's back-off (blocking); never `@RetryableTopic` with container transactions |
 | stopping a transactional listener fast | `spring.kafka.listener.immediate-stop=true` |
+
+---
+
+← [18 · Error handling, retries, dead letters and `@RetryableTopic`](18-spring-error-handling-retry.md) · [Index](README.md) · [20 · Share consumers (queues) in Spring](20-spring-share-consumers.md) →

@@ -1,6 +1,10 @@
 # 12 · Client resilience and operations
 
-**Demo:** `client-resilience` · [ClientResilienceDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ClientResilienceDemo.java) · **Recipe:** [ResilientClients.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/ResilientClients.java)
+> **Level:** Practitioner · **Read first:** [03](03-producer-durability.md), [07](07-consumer-fetch.md) · **Time:** ~5 min read, ~1.5 min run · [Glossary](glossary.md)
+>
+> **Demo:** `client-resilience` (`./demo 12`) · [ClientResilienceDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ClientResilienceDemo.java) · **Recipe:** [ResilientClients.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/ResilientClients.java) · **In Spring:** [14](14-spring-boot-setup.md)
+>
+> **In one sentence:** Keep the 4.x producer defaults and a broker stopped for 8 s costs nothing (36 000 sent, 0 failed, 0 duplicates); add `client.rack` for local reads, interceptors for cross-cutting hooks, KIP-714 for telemetry.
 
 ## The problem
 
@@ -155,6 +159,15 @@ logs and metrics.
   A client that started against three IPs that no longer exist recovers only if it goes back to
   `bootstrap.servers`, so put a DNS alias or a load balancer there, or list every broker.
 
+## Key takeaways
+
+- **Do not tune the producer's retry defaults down.** `acks=all`, idempotence and `delivery.timeout.ms=120000` rode
+  through a stopped broker: 36 000 sent, 36 000 in the topic, 0 duplicates.
+- **`client.rack` moves fetch traffic, not leadership.** With `rack-b`, 238.3K of the bytes came from broker 2; it
+  needs `broker.rack` and the `RackAwareReplicaSelector` on the brokers.
+- **Put a stable name in `bootstrap.servers` and always set `client.id`.** Rebootstrap recovers only through
+  `bootstrap.servers`; `client.id` tags every metric, quota and broker log line.
+
 ## When to use what
 
 | Situation | Setting |
@@ -166,3 +179,7 @@ logs and metrics.
 | distributed tracing | an interceptor pair (or the OpenTelemetry Kafka instrumentation, which is one) |
 | central client monitoring | keep `enable.metrics.push=true`, create subscriptions on the cluster, plug a metrics reporter into the brokers |
 | per-application quotas and log correlation | `client.id=<app>-<instance>` |
+
+---
+
+← [11 · Queues for Kafka: share groups](11-consumer-share-groups.md) · [Index](README.md) · [13 · Serialization with the Schema Registry and Avro](13-avro-schema-registry.md) →

@@ -120,7 +120,8 @@ public final class AvroDemo implements Demo {
         log.info("""
                 the deserializer reads the schema id, fetches the writer schema from the registry once (cached), and
                   resolves the schema's full name to the generated class. Avro >= 1.12.1 refuses class lookups (on both
-                  sides) unless the class is trusted, hence AvroTrust (or -Dorg.apache.avro.SERIALIZABLE_PACKAGES=...).""");
+                  sides) unless the class is trusted, hence AvroTrust (Avro's live ClassSecurityValidator, which replaced the
+                  read-once org.apache.avro.SERIALIZABLE_PACKAGES system property in 1.12.2).""");
     }
 
     private static Order consumeSpecific(Args args, int expected) {

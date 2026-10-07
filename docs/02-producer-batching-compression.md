@@ -1,10 +1,14 @@
 # 02 · Throughput: batching, compression and the accumulator
 
-**Demo:** `producer-batching` · [ProducerBatchingDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerBatchingDemo.java) · **Recipe:** [ThroughputProducer.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ThroughputProducer.java)
+> **Level:** Essentials · **Read first:** [01](01-producer-baseline.md) · **Time:** ~5 min read, ~1.5 min run · [Glossary](glossary.md)
+>
+> **Demo:** `producer-batching` (`./demo 02`) · [ProducerBatchingDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerBatchingDemo.java) · **Recipe:** [ThroughputProducer.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ThroughputProducer.java) · **In Spring:** [15](15-spring-kafkatemplate.md)
+>
+> **In one sentence:** Bigger batches and compression raise the bytes per produce request: `batch.size` and zstd, not `linger.ms` alone, took the same JSON workload from 7 432 to 162.8K records/s, at ~50 ms of latency.
 
 ## The problem
 
-Chapter 01 ended at ~4 MB/s with 1.6 s of queueing latency, because the producer was limited by
+Chapter 01 ended at 3.2 MB/s with 1.6 s of queueing latency, because the producer was limited by
 
 ```
 throughput ≈ brokers × max.in.flight × bytes-per-request / request-latency
@@ -132,6 +136,15 @@ passes no callback and never looks at the returned future loses those records wi
   `runs=` or run the demo twice before drawing fine-grained conclusions; the differences between the
   groups above are far larger than that noise.
 
+## Key takeaways
+
+- **Under load, `batch.size` is the lever, not `linger.ms`.** Linger alone left throughput flat; 16 KB → 64 KB batches
+  took it from 7.6K to 17.1K records/s.
+- **Compress text and JSON; zstd is the default choice.** `compression-rate-avg` 0.06: batches went out at 6% of
+  their size, less to send, replicate, store and fetch.
+- **A full buffer fails records through the callback, not `send()`.** After `max.block.ms` the future fails with
+  `BufferExhaustedException`; a producer without a callback loses those records silently.
+
 ## When to use what
 
 | Situation | Setting |
@@ -141,3 +154,7 @@ passes no callback and never looks at the returned future loses those records wi
 | already-compressed payloads (images, encrypted blobs) | `compression.type=none`, save the CPU |
 | many partitions per producer | remember `batch.size` is *per partition*; `buffer.memory` must hold `partitions × batch.size` at least |
 | `send()` blocks or throws `TimeoutException` on buffer | you are producing faster than the cluster accepts; bigger `buffer.memory` only delays the problem. Compress, batch bigger, add partitions/brokers, or shed load |
+
+---
+
+← [01 · Producer anatomy, defaults and metrics](01-producer-baseline.md) · [Index](README.md) · [03 · Durability, ordering and retries](03-producer-durability.md) →

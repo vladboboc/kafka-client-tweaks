@@ -1,6 +1,10 @@
 # 04 · Partitioning and keys
 
-**Demo:** `producer-partitioning` · [ProducerPartitioningDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerPartitioningDemo.java) · **Recipes:** [KeyPartitioning.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/KeyPartitioning.java), [TenantPartitioner.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/TenantPartitioner.java)
+> **Level:** Practitioner · **Read first:** [01](01-producer-baseline.md) · **Time:** ~5 min read, ~1 min run · [Glossary](glossary.md)
+>
+> **Demo:** `producer-partitioning` (`./demo 04`) · [ProducerPartitioningDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerPartitioningDemo.java) · **Recipes:** [KeyPartitioning.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/KeyPartitioning.java), [TenantPartitioner.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/TenantPartitioner.java) · **In Spring:** [15](15-spring-kafkatemplate.md)
+>
+> **In one sentence:** The key, not a setting, decides partition, ordering and batching: the sticky partitioner made batches 4× bigger than round-robin at the same rate, and one hot key put 67% of records on one partition.
 
 ## The problem
 
@@ -135,6 +139,15 @@ hashes everyone else over partitions 1–5.
 - **A custom partitioner is a routing policy in the producer.** Handy (dedicated partition for a tenant,
   geo-affinity), but every producer of the topic must agree on it, forever. Prefer keys.
 
+## Key takeaways
+
+- **Key by the entity whose order matters.** Same key, same partition, always: 0 of 20 keys moved. But few keys spread
+  unevenly (5–35 % per partition here).
+- **Leave the sticky partitioner for key-less records.** At 3 000 records/s round-robin cut batches to a quarter
+  (2 847 vs 11.2K bytes) for the same records.
+- **Fix hot keys in the key design, not in configuration.** One hot key put 67% of records on one partition; and
+  adding partitions later re-maps every key.
+
 ## When to use what
 
 | You need | Do |
@@ -145,3 +158,7 @@ hashes everyone else over partitions 1–5.
 | a hot key | split it: `key + "-" + shard` when order across shards is irrelevant, or a bigger partition count *and* more consumers |
 | a slow broker dragging producer latency | `partitioner.availability.timeout.ms=` a few hundred ms (key-less records only) |
 | strict equal distribution regardless of batching | `RoundRobinPartitioner`, knowing it costs batch efficiency |
+
+---
+
+← [03 · Durability, ordering and retries](03-producer-durability.md) · [Index](README.md) · [05 · Latency first](05-producer-low-latency.md) →

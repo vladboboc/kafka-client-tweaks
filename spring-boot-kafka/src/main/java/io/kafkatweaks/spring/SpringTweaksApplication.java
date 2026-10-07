@@ -17,13 +17,15 @@ import java.util.List;
  * </pre>
  * The remaining {@code key=value} arguments are the demo's own knobs ({@link io.kafkatweaks.common.Args}). Boot-style
  * {@code --spring.kafka.producer.properties.linger.ms=50} options are ordinary Spring properties and can be added
- * anywhere on the line: that is the Spring way of tweaking a client without touching YAML. Without a known demo name
+ * anywhere on the line: that is the Spring way of tweaking a client without touching YAML. The chapter number works in
+ * place of the name ({@code 15}), which is what the {@code demo} script at the repository root passes. Without a known demo name
  * the application runs with the {@link Catalogue#PROFILE catalogue} profile, which lists the demos.
  */
 @SpringBootApplication
 public class SpringTweaksApplication {
 
     public static void main(String[] args) {
+        args = chapterToName(args);
         List<String> plain = new DefaultApplicationArguments(args).getNonOptionArgs();
         String profile = plain.isEmpty() || Catalogue.find(plain.getFirst()).isEmpty() ? Catalogue.PROFILE : plain.getFirst();
         ConfigurableApplicationContext context = new SpringApplicationBuilder(SpringTweaksApplication.class)
@@ -32,5 +34,18 @@ public class SpringTweaksApplication {
         // The demo body ran as an ApplicationRunner inside run(). Closing the context stops the listener containers
         // and closes the producers; the exit code is whatever the demo left behind.
         System.exit(SpringApplication.exit(context, DemoSupport::exitCode));
+    }
+
+    /** Replaces a chapter number in the demo position ({@code 15}) with the demo's name, which is also its profile. */
+    static String[] chapterToName(String[] args) {
+        String[] out = args.clone();
+        for (int i = 0; i < out.length; i++) {
+            if (!out[i].startsWith("--")) {
+                int at = i;
+                Catalogue.findByNameOrChapter(out[i]).ifPresent(e -> out[at] = e.name());
+                break;
+            }
+        }
+        return out;
     }
 }

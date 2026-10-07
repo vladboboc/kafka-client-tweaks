@@ -1,6 +1,10 @@
 # 06 · Transactions and exactly-once
 
-**Demo:** `producer-transactions` · [ProducerTransactionsDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerTransactionsDemo.java) · **Recipe:** [ExactlyOnceProcessor.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ExactlyOnceProcessor.java)
+> **Level:** Deep dive · **Read first:** [03](03-producer-durability.md), [08](08-consumer-offsets.md) · **Time:** ~5 min read, ~3.5 min run · [Glossary](glossary.md)
+>
+> **Demo:** `producer-transactions` (`./demo 06`) · [ProducerTransactionsDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerTransactionsDemo.java) · **Recipe:** [ExactlyOnceProcessor.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ExactlyOnceProcessor.java) · **In Spring:** [19](19-spring-transactions.md)
+>
+> **In one sentence:** Transactions make writes across partitions atomic and commit consumed offsets with the output: a processor crashed mid-transaction, its successor fenced it, and 2 000 inputs gave 2 000 outputs, 0 duplicates.
 
 ## The problem
 
@@ -8,6 +12,9 @@ Idempotence (chapter 03) gives you "exactly one copy, in order" **per partition,
 Two things it does not give you: atomicity across partitions or topics (write A and B, or neither), and
 atomicity between *consuming* a record and *producing* its result. Both are what Kafka transactions add,
 and both are what people mean by "exactly-once" in a Kafka-to-Kafka pipeline.
+
+<details>
+<summary>Deep dive: the transaction protocol, message by message</summary>
 
 ```mermaid
 sequenceDiagram
@@ -29,6 +36,8 @@ sequenceDiagram
     TC->>CO: COMMIT marker
     Note over T1,CO: read_committed consumers see everything or nothing
 ```
+
+</details>
 
 ## The knobs
 
@@ -132,7 +141,7 @@ an output topic and commits the input offsets *inside* each transaction. The fir
 ```
 processor-1 owns partitions [0, 1, 2]
 processor-1 txn #1: p0[0..499] -> committed
-processor-1 txn #2: p1[0..323] -> CRASH before commit (will be aborted)
+processor-1 txn #2: p0[500..675] p1[0..323] -> CRASH before commit (will be aborted)
 processor-1 processed 1000 records and crashed mid-transaction (in-flight batch neither committed nor aborted)
 processor-2 owns partitions [0, 1, 2]
 processor-2 txn #1: p0[500..675] -> committed
@@ -146,14 +155,18 @@ processor-1's producer is a zombie now: InvalidProducerEpochException: Producer 
 |                            2000 |                2000 |               0 |          2000 |
 ```
 
-processor-1's second transaction had already sent part of its 324 records to the output topic when it
-"crashed"; they are physically in the log, marked aborted, and `read_committed` never returns them.
+processor-1's second transaction covered 500 input records (p0 500–675 and p1 0–323) and had already sent the
+499 before p1 offset 323 to the output topic when it "crashed" on that record; they are physically in the log,
+marked aborted, and `read_committed` never returns them. processor-2 read them again from the committed offsets
+(p0 in its transaction #1, p1 in #2).
 
 ## Reading the numbers
 
 - **`initTransactions()` is the fence.** It bumps the producer epoch for that `transactional.id`, aborts
-  whatever the previous incarnation left open, and turns the old producer into a zombie: its next commit
-  fails with `ProducerFencedException`. This is why the id must be stable per logical instance (e.g.
+  whatever the previous incarnation left open, and turns the old producer into a zombie: its next request is
+  rejected. In the demo that was a send, refused with `InvalidProducerEpochException` (a produce request with the
+  old epoch); a commit, abort or `sendOffsetsToTransaction` fails with `ProducerFencedException`. Either way the
+  only way out is `close()`. This is why the id must be stable per logical instance (e.g.
   `<app>-<partition set>` or `<app>-<instance id>`), and never random per start.
 - **Offsets are part of the transaction.** `sendOffsetsToTransaction(offsets, consumer.groupMetadata())`
   writes them to `__consumer_offsets` as *pending*; they become visible together with the output records
@@ -167,6 +180,15 @@ processor-1's second transaction had already sent part of its 324 records to the
 - **Not for everything.** Exactly-once is Kafka → Kafka. As soon as the side effect is an HTTP call or a
   database write, you are back to at-least-once plus an idempotent consumer (chapter 08).
 
+## Key takeaways
+
+- **`sendOffsetsToTransaction` is the exactly-once part.** The input offsets commit with the output: after a
+  mid-transaction crash, 2 000 in gave 2 000 out, 0 duplicates.
+- **Keep `transactional.id` stable per logical instance.** The successor's `initTransactions()` fences the old producer
+  and aborts what it left open; an id that is random per start fences nothing.
+- **Commit per poll, never per record.** A commit costs ~40–50 ms here: one record per transaction ran at 21 records/s,
+  1 000 per transaction at 12.5K.
+
 ## When to use what
 
 | Situation | Setting |
@@ -177,3 +199,7 @@ processor-1's second transaction had already sent part of its 324 records to the
 | batch size | commit per poll or on a timer (100–500 ms); never per record |
 | many processor instances | one `transactional.id` per instance, derived from something stable (host, pod ordinal, assigned partition set) |
 | transactions hanging around | lower `transaction.timeout.ms` so the coordinator aborts orphans sooner; watch broker metric `kafka.server:type=transaction-coordinator-metrics` |
+
+---
+
+← [05 · Latency first](05-producer-low-latency.md) · [Index](README.md) · [07 · The poll loop and fetch tuning](07-consumer-fetch.md) →

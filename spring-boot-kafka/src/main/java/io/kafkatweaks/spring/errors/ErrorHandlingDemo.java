@@ -122,7 +122,7 @@ public class ErrorHandlingDemo {
 
             // ---- 3. head-of-line blocking --------------------------------------------------------------------
             var hol = new Table("strategy", "slowest 'ok' record (ms from send to processing)", "why");
-            hol.row("blocking (part 1)", maxOkDelay(handler.blocking()), "the partition waits while flaky9-6 is retried 3 times with back-off");
+            hol.row("blocking (part 1)", maxOkDelay(handler.blocking()), "one consumer holds all 3 partitions, so every back-off stalls them all");
             hol.row("non-blocking (part 2)", maxOkDelay(handler.retryable()), "the failed record leaves the partition; ok records are processed at once");
             log.info("3. what the innocent records paid\n{}", hol);
         });

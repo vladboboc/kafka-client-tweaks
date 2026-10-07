@@ -71,8 +71,8 @@ public class DemoSupport {
             if (schemaRegistry != null) {
                 System.setProperty("schema.registry.url", schemaRegistry);
             }
-            log.info("== {}  (chapter {})\n   {}\n   bootstrap.servers={}   kafka-clients={}   args={}",
-                    name, entry.chapter(), entry.summary(), bootstrap, AppInfoParser.getVersion(), args);
+            log.info("== {}  (chapter {}, docs/{})\n   {}\n   bootstrap.servers={}   kafka-clients={}   args={}",
+                    name, entry.chapter(), entry.doc(), entry.summary(), bootstrap, AppInfoParser.getVersion(), args);
             try {
                 body.run(args);
             } catch (Exception e) {

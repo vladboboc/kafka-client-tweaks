@@ -1,6 +1,10 @@
 # 10 · Scaling and parallelism
 
-**Demo:** `consumer-parallel` · [ConsumerParallelDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerParallelDemo.java) · **Recipe:** [PartitionedWorkerConsumer.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/PartitionedWorkerConsumer.java)
+> **Level:** Practitioner · **Read first:** [07](07-consumer-fetch.md), [09](09-consumer-rebalance.md) · **Time:** ~5 min read, ~2 min run · [Glossary](glossary.md)
+>
+> **Demo:** `consumer-parallel` (`./demo 10`) · [ConsumerParallelDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerParallelDemo.java) · **Recipe:** [PartitionedWorkerConsumer.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/PartitionedWorkerConsumer.java) · **In Spring:** [17](17-spring-concurrency-batch.md)
+>
+> **In one sentence:** When the handler is the bottleneck, one consumer with a sequential worker per partition, `pause()`/`resume()` and watermark commits matched six consumers (628 vs 649 records/s) and kept per-partition ordering.
 
 ## The problem
 
@@ -100,7 +104,7 @@ is measurement.
 ./mvnw -q -pl plain-clients -am compile exec:java -Dexec.args="consumer-parallel"
 ```
 
-Arguments: `records=6000`, `work-ms=5`, `modes=1,2,5`.
+Arguments: `records=6000`, `work-ms=5`, `modes=1,2,5` (a subset of the five modes; all of them run by default).
 
 ## What you should see
 
@@ -141,6 +145,15 @@ Arguments: `records=6000`, `work-ms=5`, `modes=1,2,5`.
   per-partition "next offset to process" watermark. It is at-least-once with a bounded redelivery window
   and never blocks on work.
 
+## Key takeaways
+
+- **The partition is the unit of parallelism in a group.** Six consumers on six partitions reached 649 records/s;
+  a seventh consumer would sit idle.
+- **Inside one consumer: keep polling, commit only finished work.** A worker per partition, `pause()`/`resume()` and
+  watermark commits reached 628 records/s with per-partition ordering kept.
+- **Per-poll fan-out barely helps; per-record fan-out drops ordering.** Mode 3 gained 1.2× because polls span one or
+  two partitions; mode 4 ran 9 000 records/s, unordered.
+
 ## When to use what
 
 | Situation | Mode |
@@ -150,3 +163,7 @@ Arguments: `records=6000`, `work-ms=5`, `modes=1,2,5`.
 | handler is slow, partition count is fixed, ordering matters | 5 (or 3 if the handler is predictable and `max.poll.interval.ms` has room) |
 | records independent, throughput above all | 4 with a bounded semaphore around the downstream call |
 | need a library instead of hand-rolled code | Spring Kafka `concurrency` (= mode 2 in one JVM), Confluent Parallel Consumer (≈ mode 5 with key ordering), or a share group (chapter 11) |
+
+---
+
+← [09 · Group protocol and rebalancing](09-consumer-rebalance.md) · [Index](README.md) · [11 · Queues for Kafka: share groups](11-consumer-share-groups.md) →

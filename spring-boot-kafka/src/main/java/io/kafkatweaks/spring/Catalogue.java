@@ -26,29 +26,35 @@ public class Catalogue {
 
     private static final Logger log = LoggerFactory.getLogger(Catalogue.class);
 
-    public record Entry(String name, String chapter, String summary) {
+    /** @param doc the chapter's file in {@code docs/} */
+    public record Entry(String name, String chapter, String doc, String summary) {
     }
 
     private static final List<Entry> DEMOS = List.of(
-            new Entry("spring-setup", "14",
+            new Entry("spring-setup", "14", "14-spring-boot-setup.md",
                     "what Boot auto-configures, spring.kafka.* -> client configs, KafkaAdmin topics, which kafka-clients runs"),
-            new Entry("spring-template", "15",
+            new Entry("spring-template", "15", "15-spring-kafkatemplate.md",
                     "KafkaTemplate: sync vs async send, ProducerListener, several templates from one factory, the chapter-02 matrix, Micrometer"),
-            new Entry("spring-listener-acks", "16",
+            new Entry("spring-listener-acks", "16", "16-spring-listeners-acks.md",
                     "@KafkaListener ack modes (ackMode attribute), commits per mode, nack, ConsumerSeekAware replay, filter + interceptor"),
-            new Entry("spring-concurrency", "17",
+            new Entry("spring-concurrency", "17", "17-spring-concurrency-batch.md",
                     "concurrency vs partitions, batch listeners, containers on virtual threads, asyncAcks hand-off, pause/resume"),
-            new Entry("spring-error-handling", "18",
+            new Entry("spring-error-handling", "18", "18-spring-error-handling-retry.md",
                     "DefaultErrorHandler back-off, dead-letter publishing with headers, poison pills, @RetryableTopic non-blocking retries"),
-            new Entry("spring-transactions", "19",
+            new Entry("spring-transactions", "19", "19-spring-transactions.md",
                     "transaction-id-prefix, executeInTransaction, allow-non-transactional, container-managed exactly-once"),
-            new Entry("spring-share", "20",
+            new Entry("spring-share", "20", "20-spring-share-consumers.md",
                     "share consumers: ShareAckMode EXPLICIT/MANUAL, release/reject/renew, recoverer, acquisition locks, concurrency"),
-            new Entry("spring-serdes", "21",
+            new Entry("spring-serdes", "21", "21-spring-serialization.md",
                     "Jackson 3 JSON: __TypeId__ tokens, per-listener deserializer properties, message converter; Confluent Avro via a 2nd factory"));
 
     public static Optional<Entry> find(String name) {
         return DEMOS.stream().filter(e -> e.name().equals(name)).findFirst();
+    }
+
+    /** A demo by name ({@code spring-template}) or by chapter number ({@code 15}), as the {@code demo} script passes it. */
+    public static Optional<Entry> findByNameOrChapter(String nameOrChapter) {
+        return find(nameOrChapter).or(() -> DEMOS.stream().filter(e -> e.chapter().equals(nameOrChapter)).findFirst());
     }
 
     public static List<Entry> all() {
@@ -71,10 +77,10 @@ public class Catalogue {
                 log.error("unknown demo: {}", plain.getFirst());
                 DemoSupport.setExitCode(2);
             }
-            var demos = new Table("demo", "ch.", "what it shows");
-            DEMOS.forEach(e -> demos.row(e.name(), e.chapter(), e.summary()));
-            log.info("usage: ./mvnw -q -pl spring-boot-kafka -am compile spring-boot:run -Dspring-boot.run.arguments=\"<demo> [key=value ...]\"\n{}", demos);
-            log.info("chapter 22 (testing) has no demo; it is the module's test suite: ./mvnw -q -pl spring-boot-kafka -am verify");
+            var demos = new Table("demo", "ch.", "what it shows", "read");
+            DEMOS.forEach(e -> demos.row(e.name(), e.chapter(), e.summary(), "docs/" + e.doc()));
+            log.info("usage: ./demo <chapter|demo> [key=value ...]   or   ./mvnw -q -pl spring-boot-kafka -am compile spring-boot:run -Dspring-boot.run.arguments=\"<demo> [key=value ...]\"\n{}", demos);
+            log.info("chapter 22 (testing) has no demo; it is the module's test suite: ./mvnw -q -pl spring-boot-kafka -am verify (docs/22-spring-testing.md)");
         };
     }
 }

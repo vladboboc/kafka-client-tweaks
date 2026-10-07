@@ -1,6 +1,10 @@
 # 14 · Spring Boot wiring and the `spring.kafka.*` mapping
 
-**Demo:** `spring-setup` · [SetupDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/setup/SetupDemo.java) · **Recipe:** [application-spring-setup.yml](../spring-boot-kafka/src/main/resources/application-spring-setup.yml), [TopicsConfig.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/TopicsConfig.java)
+> **Level:** Essentials · **Read first:** [01](01-producer-baseline.md), [07](07-consumer-fetch.md) · **Time:** ~10 min read, ~1 min run · [Glossary](glossary.md)
+>
+> **Demo:** `spring-setup` (`./demo 14`) · [SetupDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/setup/SetupDemo.java) · **Recipe:** [application-spring-setup.yml](../spring-boot-kafka/src/main/resources/application-spring-setup.yml), [TopicsConfig.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/TopicsConfig.java) · **Plain-client version:** chapters [01](01-producer-baseline.md)–[13](13-avro-schema-registry.md)
+>
+> **In one sentence:** How Boot turns `spring.kafka.*` into the producer, consumer and admin configs of part 1: typed keys are converted (`64KB` became `65536`), the rest passes through `properties[...]`, and your own beans replace Boot's.
 
 ## The problem
 
@@ -83,6 +87,9 @@ returns before every partition has a leader, so the demos call `Topics.ensure(..
 
 ## Two kafka-clients versions in one repository
 
+<details>
+<summary>Deep dive: why this module runs kafka-clients 4.2.1, and how to switch</summary>
+
 Boot 4.1.1 manages **kafka-clients 4.2.1**, the version spring-kafka 4.1.1 is compiled against, and this module
 keeps it. `plain-clients` and `tweaks-common` use **4.3.1**, the brokers' line (Confluent Platform 8.3.2 =
 Apache Kafka 4.3). Kafka clients and brokers negotiate API versions, so a 4.2 client against a 4.3 broker is a
@@ -91,6 +98,8 @@ deprecation warning for the `classic` group protocol). `tweaks-common`'s own kaf
 to 4.2.1 inside this module by the imported BOM (managed versions apply to transitive dependencies), and the
 same happens to its Jackson 2 (2.22.2 → Boot's 2.21.5). To run the brokers' line instead, declare
 `org.apache.kafka:kafka-clients:${kafka.version}` in the module's `dependencyManagement` above the BOM import.
+
+</details>
 
 ## The code that matters
 
@@ -174,7 +183,8 @@ The beans Boot created, and the two it did not:
 ```
 
 The YAML of this profile next to what the three clients received (`64KB` became `65536`, `250ms` became `250`,
-the common `properties[...]` reached all three, the producer-only one reached the producer):
+the common `properties[...]` reached all three, the producer-only one reached the producer; a few rows, such as
+`key-serializer` and `auto-offset-reset`, are left out here):
 
 ```
 | spring.kafka.* (application.yml + application-spring-setup.yml) | client config       | producer                                        | consumer                                        | admin                                           |
@@ -241,6 +251,15 @@ Then the topics `KafkaAdmin` created (3 and 6 partitions, replicas `1,2,3`, all 
   the client is not *newer* than what spring-kafka was tested with, and that the broker is at least as new as
   the client's features require (share consumers need 4.2+ brokers; ours are 4.3).
 
+## Key takeaways
+
+- **A typed key where Boot has one, `properties["[...]"]` for the rest**: `batch-size: 64KB` arrived as `65536`;
+  `linger.ms` and `group.protocol` have no typed key.
+- **The factory map is the truth**: when a property "does not work", log `getConfigurationProperties()`; Boot
+  cannot validate keys inside the escape hatch.
+- **Your bean replaces Boot's**: a second `KafkaTemplate` bean removes the auto-configured one, and the listener
+  container, not `enable.auto.commit`, decides commits (chapter 16).
+
 ## When to use what
 
 | Situation | Setting |
@@ -252,3 +271,7 @@ Then the topics `KafkaAdmin` created (3 and 6 partitions, replicas `1,2,3`, all 
 | topics owned by the service | `NewTopic` / `KafkaAdmin.NewTopics` beans with `TopicBuilder`; `fail-fast: true` so a missing cluster is loud |
 | topics owned by the platform team | `spring.kafka.admin.auto-create: false` and `spring.kafka.listener.missing-topics-fatal: true` |
 | the whole cluster lives behind SSL/SASL | `spring.kafka.security.protocol`, `spring.kafka.ssl.bundle`, `spring.kafka.jaas.*` once, for all clients |
+
+---
+
+← [13 · Serialization with the Schema Registry and Avro](13-avro-schema-registry.md) · [Index](README.md) · [15 · KafkaTemplate](15-spring-kafkatemplate.md) →

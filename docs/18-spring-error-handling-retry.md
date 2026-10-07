@@ -1,6 +1,10 @@
 # 18 · Error handling, retries, dead letters and `@RetryableTopic`
 
-**Demo:** `spring-error-handling` · [ErrorHandlingDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/ErrorHandlingDemo.java) · [application-spring-error-handling.yml](../spring-boot-kafka/src/main/resources/application-spring-error-handling.yml) · **Recipes:** [ErrorHandlingRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/recipe/ErrorHandlingRecipe.java), [OrderListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/recipe/OrderListeners.java), [DltPublisher.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/recipe/DltPublisher.java)
+> **Level:** Practitioner · **Read first:** [16](16-spring-listeners-acks.md) · **Time:** ~10 min read, ~1 min run · [Glossary](glossary.md)
+>
+> **Demo:** `spring-error-handling` (`./demo 18`) · [ErrorHandlingDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/ErrorHandlingDemo.java) · [application-spring-error-handling.yml](../spring-boot-kafka/src/main/resources/application-spring-error-handling.yml) · **Recipes:** [ErrorHandlingRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/recipe/ErrorHandlingRecipe.java), [OrderListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/recipe/OrderListeners.java), [DltPublisher.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/recipe/DltPublisher.java) · **Plain-client version:** [08](08-consumer-offsets.md)
+>
+> **In one sentence:** Blocking retries pause the partition, `@RetryableTopic` moves the wait to retry topics at the cost of per-key ordering: an innocent record waited 3.4 s behind blocking retries, 527 ms with retry topics.
 
 ## The problem
 
@@ -95,14 +99,20 @@ and the poison-pill half is two lines of yml (`value-deserializer: ErrorHandling
 
 - **Blocking**: `flaky9-6` was tried at 1016, 1520, 2344 and 3155 ms and dead-lettered with its exception in the
   `kafka_dlt-*` headers; `fatal-4` (`IllegalArgumentException`, not retryable) went to the DLT after one attempt.
-  The partition waited meanwhile: an innocent record took 3.4 s.
+  The consumer, and with it every partition it owned, waited meanwhile: an innocent record took 3.4 s.
 - **Non-blocking**: the same failure moved through `-retry-1000`, `-retry-2000`, `-retry-4000` and `-dlt` while
   the partition moved on; the innocent record took 527 ms. Ordering per key is the price.
 - **The DLT template** ([DltPublisher.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/recipe/DltPublisher.java))
   needs a `DelegatingByTypeSerializer`: a poison pill reaches the recoverer as the original `byte[]`, a failed
   record as the deserialized object.
+
+<details>
+<summary>Deep dive: why the error handler is not a bean</summary>
+
 - **The handler is not a bean on purpose**: Boot would wire a `CommonErrorHandler` bean into the default factory
   and the `@RetryableTopic` listener must keep its own.
+
+</details>
 
 The demo produces scripted keys and reads the DLT back; everything else in
 [ErrorHandlingDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/errors/ErrorHandlingDemo.java) and
@@ -169,15 +179,18 @@ and the dead-letter topic afterwards:
 
 ```
 | strategy              | slowest 'ok' record (ms from send to processing) | why                                                                      |
-| blocking (part 1)     |                                             3437 | the partition waits while flaky9-6 is retried 3 times with back-off      |
+| blocking (part 1)     |                                             3437 | one consumer holds all 3 partitions, so every back-off stalls them all   |
 | non-blocking (part 2) |                                              527 | the failed record leaves the partition; ok records are processed at once |
 ```
 
 ## Reading the numbers
 
-- **Blocking retry is a partition-wide pause.** `flaky9-6` was tried at 1016, 1520, 2344 and 3155 ms: the 200,
-  400 and 800 ms back-offs, each one blocking partition 1. `ok-7` sat behind `flaky2-3` and `fatal-4` in partition 0
-  for 3.4 s. Back-off is cheap for the failing record and expensive for its neighbours, which is why the default
+- **Blocking retry pauses the consumer, not just the record.** `flaky9-6` was tried at 1016, 1520, 2344 and
+  3155 ms: the 200, 400 and 800 ms back-offs. The container runs one consumer (the default concurrency 1) for all
+  three partitions and waits out every back-off on its thread, so each back-off stalled every partition it owned:
+  `flaky2-3`'s retries in partition 0 only ran in between `flaky9-6`'s, and `ok-7`, queued behind `flaky2-3` and
+  `fatal-4` in partition 0, was processed after 3.4 s. With one consumer per partition (`concurrency` 3, chapter 17)
+  only the failing record's partition would wait. Back-off is cheap for the failing record and expensive for its neighbours, which is why the default
   handler retries **ten times with no wait**: fast failures for transient blips, nothing else.
 - **Classification decides between retry and dead letter.** `IllegalArgumentException` was registered as not
   retryable and went to the DLT after one attempt. The handler classifies by the *cause* inside
@@ -200,6 +213,15 @@ and the dead-letter topic afterwards:
 - **Both are at-least-once.** A retried record was seen by the listener before; the DLT record may be a
   duplicate of a side effect that half happened. Chapter 08's idempotent handler still applies.
 
+## Key takeaways
+
+- **Blocking retry pauses the consumer's partitions.** `DefaultErrorHandler` seeks back and waits out each back-off on
+  the consumer thread; an innocent record waited 3.4 s. Keep blocking back-offs short.
+- **`@RetryableTopic` moves the wait off the partition, and ordering with it.** The innocent record took 527 ms; a
+  retried record is processed after its successors and copied per attempt.
+- **Classify, and catch poison pills before the listener.** Register bugs as not retryable so they go straight to the
+  DLT; `ErrorHandlingDeserializer` plus a `DelegatingByTypeSerializer` DLT template parks undeserializable bytes.
+
 ## When to use what
 
 | Situation | Setting |
@@ -213,3 +235,7 @@ and the dead-letter topic afterwards:
 | batch listeners | throw `BatchListenerFailedException(msg, record)` from the loop, so the handler knows the index |
 | the same policy for every listener, no annotations | `spring.kafka.retry.topic.enabled=true` + `spring.kafka.retry.topic.*` |
 | exactly-once processor (chapter 19) | blocking retries via `DefaultAfterRollbackProcessor`; `@RetryableTopic` is not compatible with container transactions |
+
+---
+
+← [17 · Concurrency, batch listeners and back-pressure](17-spring-concurrency-batch.md) · [Index](README.md) · [19 · Transactions in Spring](19-spring-transactions.md) →

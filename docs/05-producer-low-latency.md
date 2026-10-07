@@ -1,6 +1,10 @@
 # 05 · Latency first
 
-**Demo:** `producer-low-latency` · [ProducerLowLatencyDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerLowLatencyDemo.java) · **Recipe:** [LowLatencyProducer.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/LowLatencyProducer.java)
+> **Level:** Practitioner · **Read first:** [02](02-producer-batching-compression.md) · **Time:** ~5 min read, ~1.5 min run · [Glossary](glossary.md)
+>
+> **Demo:** `producer-low-latency` (`./demo 05`) · [ProducerLowLatencyDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerLowLatencyDemo.java) · **Recipe:** [LowLatencyProducer.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/LowLatencyProducer.java) · **In Spring:** [15](15-spring-kafkatemplate.md)
+>
+> **In one sentence:** When batches do not fill, `linger.ms` is a latency floor: `linger.ms=0` took sequential p50 from 9.57 ms to 2.80 ms, with `acks=all` and idempotence still on.
 
 ## The problem
 
@@ -75,7 +79,8 @@ Arguments: `sync-records=300`, `rate=500`, `seconds=10`, `size=256`.
 | linger=0, acks=1                   |   2.04 |   5.85 |  14.52 |
 ```
 
-**2. A paced asynchronous stream** at 500 records/s, each record timed from `send()` to callback:
+**2. A paced asynchronous stream** at 500 records/s, each record timed from `send()` to callback (the demo also logs a
+`sent` column, left out here):
 
 ```
 | preset                             | p50 ms | p99 ms | batch-size-avg | records/request | request-latency-avg | queue-time-avg |
@@ -99,10 +104,20 @@ Arguments: `sync-records=300`, `rate=500`, `seconds=10`, `size=256`.
   dropping to `acks=1`.
 - **Compression at low rates is pure overhead**: `records/request` is 9.5 in the first row only because
   the batch waited 50 ms; the 501 bytes it produced cost a zstd call and gained nothing.
-- **p99 in the paced run is noisy** (85–115 ms across presets): that is GC, Docker networking and the
-  Windows scheduler, not Kafka configuration. Tail latency needs JVM tuning and a quiet host; producer
+- **p99 in the paced run is noisy** (56–115 ms across presets, and unrelated to `linger.ms`: the two `linger=0`
+  rows have a higher p99 than the `linger=50` row). That is GC, Docker networking and the Windows scheduler, not Kafka
+  configuration. Tail latency needs JVM tuning and a quiet host; producer
   settings decide p50.
 - **Idempotence stays on.** Compare rows 3 and 4: the difference is `acks`, not idempotence.
+
+## Key takeaways
+
+- **`linger.ms` is a latency floor when batches do not fill.** At 500 records/s, `linger.ms=50` meant acks at ~55 ms;
+  `linger.ms=0` left 0.48 ms of queue time.
+- **Low latency does not need `acks=1`.** `linger.ms=0` alone took sequential p50 from 9.57 to 2.80 ms with `acks=all`
+  and idempotence; `acks=1` saved only 0.8 ms more.
+- **Producer settings decide p50, not p99.** The paced p99 of 56–115 ms was GC, Docker networking and the scheduler;
+  tail latency needs JVM tuning and a quiet host.
 
 ## When to use what
 
@@ -113,3 +128,7 @@ Arguments: `sync-records=300`, `rate=500`, `seconds=10`, `size=256`.
 | moderate rate, latency budget of a few ms | `linger.ms=1–2` gives small batches without a visible floor |
 | moderate rate, latency budget of 20 ms+ | go back to chapter 02: `linger.ms=10–20` and compression pay for themselves |
 | mixed traffic in one application | two producers with two configurations; a producer is cheap, a wrong `linger.ms` is not |
+
+---
+
+← [04 · Partitioning and keys](04-producer-partitioning.md) · [Index](README.md) · [06 · Transactions and exactly-once](06-producer-transactions.md) →

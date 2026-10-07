@@ -1,6 +1,10 @@
 # 20 · Share consumers (queues) in Spring
 
-**Demo:** `spring-share` · [ShareDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/ShareDemo.java) · [application-spring-share.yml](../spring-boot-kafka/src/main/resources/application-spring-share.yml) · **Recipes:** [ShareConfig.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/ShareConfig.java), [ShareListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/ShareListeners.java), [ReleaseTransientRecoverer.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/ReleaseTransientRecoverer.java), [RenewWhileWorking.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/RenewWhileWorking.java)
+> **Level:** Deep dive · **Read first:** [11](11-consumer-share-groups.md), [16](16-spring-listeners-acks.md) · **Time:** ~15 min read, ~1.5 min run · [Glossary](glossary.md)
+>
+> **Demo:** `spring-share` (`./demo 20`) · [ShareDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/ShareDemo.java) · [application-spring-share.yml](../spring-boot-kafka/src/main/resources/application-spring-share.yml) · **Recipes:** [ShareConfig.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/ShareConfig.java), [ShareListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/ShareListeners.java), [ReleaseTransientRecoverer.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/ReleaseTransientRecoverer.java), [RenewWhileWorking.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/share/recipe/RenewWhileWorking.java) · **Plain-client version:** [11](11-consumer-share-groups.md)
+>
+> **In one sentence:** Share listeners are `@KafkaListener`s on factories you write yourself; the acknowledgement mode decides who acknowledges and when, and in `EXPLICIT` mode the lock must outlast the slowest poll, not the slowest record.
 
 ## The problem
 
@@ -43,10 +47,15 @@ flowchart LR
 | `max.poll.records` | `spring.kafka.consumer.max-poll-records` | 500 | records one share fetch acquires; in `EXPLICIT` mode also how many locks one slow record can let expire |
 | not available | | | batch listeners (rejected at startup), topic patterns and explicit partitions (unsupported), message converters, `clientIdPrefix` and `properties` on the annotation (ignored), `spring.kafka.listener.*` (the container polls with a fixed 1 s timeout), rebalance/idle/pause events |
 
+<details>
+<summary>Deep dive: two log lines you can ignore</summary>
+
 Two log lines you will see and can ignore: at every start of an `EXPLICIT` container, `Listener is an
 AcknowledgingShareConsumerAwareMessageListener but ShareAckMode.EXPLICIT is active` (the annotation adapter always
 implements that interface, whether or not the method takes a `ShareAcknowledgment`), and at shutdown `Consumer stopped`
 per consumer thread.
+
+</details>
 
 ## The code that matters
 
@@ -234,6 +243,15 @@ one poll acquires all 40:
   deletes its six groups first so that a previous run cannot pre-archive anything (`Topics.deleteShareGroup`, i.e.
   `Admin.deleteShareGroups`).
 
+## Key takeaways
+
+- **Boot configures nothing for share consumers.** Write the `ShareConsumerFactory` (minus consumer-group-only keys)
+  and one container factory per ack mode; lock and delivery limit are group configs set through Admin.
+- **In `MANUAL` mode every record needs a decision.** One forgotten acknowledgement stalled its consumer thread for
+  good, and its whole poll went uncommitted: 385 records were never delivered.
+- **Size the lock above the slowest poll.** One 3 s record under a 2 s lock got all 40 `EXPLICIT` acknowledgements
+  refused; a 10 s lock or `renew()` fixed it.
+
 ## When to use what
 
 | Situation | Setting |
@@ -246,3 +264,7 @@ one poll acquires all 40:
 | where a new group starts, lock duration, delivery limit | group configs via `Admin.incrementalAlterConfigs` (`Topics.alterGroupConfigs`), not consumer properties |
 | ordering per key, replay by offset, batch listeners, transactions | a consumer group (chapters 16–19); share containers offer none of these |
 | observing commit results | `ContainerProperties.setAcknowledgementCommitCallback` |
+
+---
+
+← [19 · Transactions in Spring](19-spring-transactions.md) · [Index](README.md) · [21 · Serialization in Spring: JSON and Avro](21-spring-serialization.md) →

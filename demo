@@ -1,0 +1,50 @@
+#!/bin/sh
+# Runs a chapter's demo by its number, so nobody has to remember module names or the -D quoting rules:
+#
+#   ./demo 02                              chapter 02 with its defaults
+#   ./demo 02 records=5000 linger.ms=20    demo parameters and client properties, as in the chapter's "Run it"
+#   ./demo 15 --spring.kafka.producer.properties.linger.ms=50
+#   ./demo plain | ./demo spring           list the demos of part 1 / part 2
+#
+# Chapters 01-13 run in plain-clients (exec:java), 14-21 in spring-boot-kafka (spring-boot:run), 22 is the Spring
+# module's test suite. The full ./mvnw command is echoed first: it is exactly what the chapters document.
+set -e
+cd "$(dirname "$0")"
+
+usage() {
+  echo "usage: ./demo <chapter 01-22 | demo name> [key=value ...]"
+  echo "       ./demo plain    list the plain-client demos (chapters 01-13)"
+  echo "       ./demo spring   list the Spring Boot demos (chapters 14-22)"
+}
+
+[ $# -eq 0 ] && { usage; exit 0; }
+demo="$1"
+shift
+
+case "$demo" in
+  plain)  module=plain ;  demo=list ;;
+  spring) module=spring ; demo="" ;;
+  spring-*) module=spring ;;
+  [0-9]|[0-9][0-9])
+    n=$(expr "$demo" + 0)
+    if   [ "$n" -ge 1 ]  && [ "$n" -le 13 ]; then module=plain
+    elif [ "$n" -ge 14 ] && [ "$n" -le 21 ]; then module=spring
+    elif [ "$n" -eq 22 ]; then module=tests
+    else usage; exit 2
+    fi ;;
+  -h|--help|help) usage; exit 0 ;;
+  *) module=plain ;;
+esac
+
+args=$(echo "$demo $*" | sed 's/^ *//; s/ *$//')
+case "$module" in
+  plain)
+    set -x
+    exec ./mvnw -q -pl plain-clients -am compile exec:java "-Dexec.args=$args" ;;
+  spring)
+    set -x
+    exec ./mvnw -q -pl spring-boot-kafka -am compile spring-boot:run "-Dspring-boot.run.arguments=$args" ;;
+  tests)
+    set -x
+    exec ./mvnw -q -pl spring-boot-kafka -am verify ;;
+esac

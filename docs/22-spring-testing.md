@@ -1,6 +1,10 @@
 # 22 · Testing Spring Kafka applications
 
-**Tests (the module's test suite):** [KafkaPropertiesMappingTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/KafkaPropertiesMappingTest.java) · [MockProducerFactoryTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/txn/MockProducerFactoryTest.java) · [ContextLoadsTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/ContextLoadsTest.java) · [TemplateListenerRoundTripTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/TemplateListenerRoundTripTest.java) · [DeadLetterTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/errors/DeadLetterTest.java) · [ShareListenerTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/share/ShareListenerTest.java) · [TweaksSpringTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/TweaksSpringTest.java) · [DemoProfilesTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/DemoProfilesTest.java) · [application-test.yml](../spring-boot-kafka/src/test/resources/application-test.yml) · **Recipe:** the tests themselves
+> **Level:** Practitioner · **Read first:** [14](14-spring-boot-setup.md), [16](16-spring-listeners-acks.md) · **Time:** ~10 min read, ~40 s test run · [Glossary](glossary.md)
+>
+> **Demo:** the test suite (`./mvnw -q -pl spring-boot-kafka -am verify`) · [KafkaPropertiesMappingTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/KafkaPropertiesMappingTest.java) · [MockProducerFactoryTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/txn/MockProducerFactoryTest.java) · [ContextLoadsTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/ContextLoadsTest.java) · [TemplateListenerRoundTripTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/TemplateListenerRoundTripTest.java) · [DeadLetterTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/errors/DeadLetterTest.java) · [ShareListenerTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/share/ShareListenerTest.java) · [TweaksSpringTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/TweaksSpringTest.java) · [DemoProfilesTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/DemoProfilesTest.java) · [FailureScriptTest](../spring-boot-kafka/src/test/java/io/kafkatweaks/spring/errors/FailureScriptTest.java) · [application-test.yml](../spring-boot-kafka/src/test/resources/application-test.yml) · **Recipe:** the tests themselves
+>
+> **In one sentence:** Test in three layers: no broker for property binding, mock producers and wiring; an in-JVM KRaft broker for listeners, dead letters and share listeners; the Docker stack for replication and failures.
 
 ## The problem
 
@@ -73,7 +77,7 @@ try (ConfigurableApplicationContext context = new SpringApplicationBuilder(Sprin
 - **Start containers yourself and wait for the assignment** (`ContainerTestUtils.waitForAssignment`): auto-startup is
   off in this module, and a record sent before the consumer owns its partition makes the test pass by luck.
 - **A context per profile, no broker**: the `test` profile keeps `KafkaAdmin` from creating topics, containers do not
-  start, and every `containerFactory = "..."` name, `@Profile` string and listener id is checked in 3 s.
+  start, and every `containerFactory = "..."` name, `@Profile` string and listener id is checked in 2.4 s.
 
 ## Run it
 
@@ -145,6 +149,10 @@ catalogue, take 2.4 s together.)
   `kafka_dlt-exception-cause-fqcn` (the real `IllegalStateException`) and the message, as in chapter 18. Both topics
   are created by `@EmbeddedKafka(topics = ...)` with the same partition count, since the recoverer publishes to the
   same partition.
+
+<details>
+<summary>Deep dive: share listeners on the embedded broker</summary>
+
 - **`ShareListenerTest`: two traps, one per layer.** Spring: a `@KafkaListener` that names its `containerFactory` is
   resolved while its own bean is being created, so the factory cannot be a `@Bean` method of the same
   `@TestConfiguration` class (`BeanCurrentlyInCreationException`); the test has one class for the factories and one
@@ -154,10 +162,22 @@ catalogue, take 2.4 s together.)
   listener never receives anything; `brokerProperties = {"share.coordinator.state.topic.replication.factor=1", "share.coordinator.state.topic.min.isr=1"}`
   fixes it. The group is set to `share.auto.offset.reset=earliest` through `Admin` first, because the records are
   sent before the member has its assignment (chapter 20: up to 5 s).
+
+</details>
+
 - **What the embedded broker cannot tell you**: anything about replication (`acks=all` with one replica is
   `acks=1`), `min.insync.replicas`, a broker going away, rack-aware fetching, and honest latencies (everything is in
   one JVM). Those stay with the Docker stack, i.e. with the demos; a CI job that needs them runs the stack or
   Testcontainers.
+
+## Key takeaways
+
+- **Three layers, each for what it proves.** Binding, mock producers and wiring need no broker; listeners and dead
+  letters need the embedded one; replication and failures need Docker.
+- **Start containers yourself and wait for the assignment.** Auto-startup is off here; call
+  `ContainerTestUtils.waitForAssignment` before sending, or a passing test is luck, not proof.
+- **One context per profile catches wiring typos without a broker.** `DemoProfilesTest` checks factory names,
+  `@Profile` strings and listener ids; its nine contexts took 2.4 s together.
 
 ## When to use what
 
@@ -170,3 +190,7 @@ catalogue, take 2.4 s together.)
 | a share listener on the embedded broker | `brokerProperties` lowering `share.coordinator.state.topic.replication.factor` and `min.isr` to 1; group config `share.auto.offset.reset=earliest` |
 | replication, failures, racks, real timings | the Docker stack (`docker compose up -d --wait`) or Testcontainers; that is what the demos are |
 | keeping the suite fast | one context per embedded test class, few topics, no `Thread.sleep`: latches and `KafkaTestUtils.getSingleRecord` with a timeout |
+
+---
+
+← [21 · Serialization in Spring: JSON and Avro](21-spring-serialization.md) · [Index](README.md) · [Cheat sheet](cheatsheet.md) →

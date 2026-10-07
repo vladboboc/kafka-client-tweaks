@@ -151,7 +151,7 @@ public final class ProducerDurabilityDemo implements Demo {
                       With one of them gone the topic is read-only for acks=all producers, while acks=1 keeps writing to
                       the leader alone. (The cluster itself stays up: the KRaft quorum only needs 2 of 3 controllers.)""", TOPIC_RF2);
 
-            sendOne("before", TOPIC_RF2, "all");
+            sendOne(args, "before", TOPIC_RF2, "all");
 
             if (control.equals("docker")) {
                 docker("stop", container);
@@ -161,8 +161,8 @@ public final class ProducerDurabilityDemo implements Demo {
             waitForIsr(topics, TOPIC_RF2, 1, waitSeconds);
             topics.logPartitions(TOPIC_RF2);
 
-            sendOne("broker down", TOPIC_RF2, "all");
-            sendOne("broker down", TOPIC_RF2, "1");
+            sendOne(args, "broker down", TOPIC_RF2, "all");
+            sendOne(args, "broker down", TOPIC_RF2, "1");
 
             if (control.equals("docker")) {
                 docker("start", container);
@@ -171,7 +171,7 @@ public final class ProducerDurabilityDemo implements Demo {
             }
             waitForIsr(topics, TOPIC_RF2, 2, waitSeconds);
             topics.logPartitions(TOPIC_RF2);
-            sendOne("recovered", TOPIC_RF2, "all");
+            sendOne(args, "recovered", TOPIC_RF2, "all");
         }
         log.info("""
                 takeaway: acks=all is only as strong as min.insync.replicas. RF=3 + min.insync.replicas=2 (the
@@ -180,11 +180,12 @@ public final class ProducerDurabilityDemo implements Demo {
     }
 
     /** One send with a short delivery budget so a refused write shows up in seconds rather than minutes. */
-    private static void sendOne(String phase, String topic, String acks) {
+    private static void sendOne(Args args, String phase, String topic, String acks) {
         var props = Env.producer("isr-acks-" + acks);
         // The recipe under test: durable() vs leaderOnly(), both with a short delivery budget.
         props.putAll(acks.equals("all") ? DurableProducer.durable() : DurableProducer.leaderOnly());
         props.putAll(DurableProducer.failFast(Duration.ofSeconds(3), Duration.ofSeconds(8), Duration.ofSeconds(10)));
+        args.applyOverrides(props);   // dotted command-line properties win, as in every other part of the demo
         long t0 = System.nanoTime();
         try (var producer = new KafkaProducer<String, String>(props)) {
             RecordMetadata md = producer.send(new ProducerRecord<>(topic, "k", "phase=" + phase)).get();

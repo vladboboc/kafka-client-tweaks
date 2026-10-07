@@ -1,6 +1,10 @@
 # 03 · Durability, ordering and retries
 
-**Demo:** `producer-durability` · [ProducerDurabilityDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerDurabilityDemo.java) · **Recipe:** [DurableProducer.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/DurableProducer.java)
+> **Level:** Essentials · **Read first:** [01](01-producer-baseline.md) · **Time:** ~5 min read, ~2 min run · [Glossary](glossary.md)
+>
+> **Demo:** `producer-durability` (`./demo 03`) · [ProducerDurabilityDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerDurabilityDemo.java) · **Recipe:** [DurableProducer.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/DurableProducer.java) · **In Spring:** [14](14-spring-boot-setup.md)
+>
+> **In one sentence:** `acks=all` is only as strong as `min.insync.replicas`: with one of two replicas stopped, `acks=all` refused the write after 8.1 s, while `acks=1` "succeeded" onto a single disk in 138 ms.
 
 ## The problem
 
@@ -128,6 +132,15 @@ $ docker start kafka-1
 - **`retries` is not the knob to turn.** It is effectively infinite; `delivery.timeout.ms` is the budget
   you configure, and it should be as large as the longest outage you want to ride through invisibly.
 
+## Key takeaways
+
+- **`acks=all` is only as strong as `min.insync.replicas`.** Use RF=3 with `min.insync.replicas=2`; on the RF=2 topic
+  one stopped broker made `acks=all` refuse writes while `acks=1` wrote to one disk.
+- **Leave idempotence on.** It cost nothing measurable here, and it is what keeps the effectively infinite retries from
+  duplicating or reordering records.
+- **`delivery.timeout.ms` is the retry budget, not `retries`.** Keep 120 s to ride through a broker restart; shorten it
+  (≥ `linger.ms + request.timeout.ms`) only to fail fast.
+
 ## When to use what
 
 | Need | Setting |
@@ -138,3 +151,7 @@ $ docker start kafka-1
 | ride through a broker restart without errors | keep `delivery.timeout.ms` at 120 s or higher; alert on `record-retry-total` instead |
 | fail fast, let the caller decide | `delivery.timeout.ms` short (≥ `linger.ms + request.timeout.ms`), handle the callback's exception |
 | strict ordering per partition | idempotence on (default). Without it, `max.in.flight.requests.per.connection=1` is the only way, and it halves throughput |
+
+---
+
+← [02 · Throughput: batching, compression and the accumulator](02-producer-batching-compression.md) · [Index](README.md) · [04 · Partitioning and keys](04-producer-partitioning.md) →

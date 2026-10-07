@@ -1,6 +1,10 @@
 # 15 · KafkaTemplate
 
-**Demo:** `spring-template` · [TemplateDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/template/TemplateDemo.java) · [application-spring-template.yml](../spring-boot-kafka/src/main/resources/application-spring-template.yml) · **Recipes:** [TemplateRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/template/recipe/TemplateRecipe.java), [SendPatterns.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/template/recipe/SendPatterns.java)
+> **Level:** Essentials · **Read first:** [14](14-spring-boot-setup.md), [02](02-producer-batching-compression.md) · **Time:** ~10 min read, ~1 min run · [Glossary](glossary.md)
+>
+> **Demo:** `spring-template` (`./demo 15`) · [TemplateDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/template/TemplateDemo.java) · [application-spring-template.yml](../spring-boot-kafka/src/main/resources/application-spring-template.yml) · **Recipes:** [TemplateRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/template/recipe/TemplateRecipe.java), [SendPatterns.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/template/recipe/SendPatterns.java) · **Plain-client version:** [01](01-producer-baseline.md), [02](02-producer-batching-compression.md), [05](05-producer-low-latency.md)
+>
+> **In one sentence:** `KafkaTemplate` is one shared producer with a future per send: waiting once instead of per record raised 114 to 15 520 records/s, and derived templates reran chapter 02's matrix without a second bean.
 
 ## The problem
 
@@ -161,11 +165,26 @@ headers become record headers, and `sendDefault` to `spring.kafka.template.defau
 - **Headers travel both ways.** Spring adds `spring_json_header_types` so the header values can be mapped back
   to their Java types on the consumer side (`@Header` parameters, chapter 16); it costs a few bytes per record and
   can be switched off with a custom `KafkaHeaderMapper`.
+
+<details>
+<summary>Deep dive: the two Micrometer metric families</summary>
+
 - **Two metric families.** `spring.kafka.template` is spring-kafka's own timer per template *bean* (count, mean,
   result/exception tags). `kafka.producer.*` are the client's metrics of chapters 01–05, bound to Micrometer by
   Boot for every producer the factory creates and tagged `spring.id=<factory>.<client.id>`; they disappear when
   the producer is closed, which is why the tuned presets are gone from the table. `template.metrics()` gives the
   raw map when you want the plain chapters' `MetricsReport` view instead.
+
+</details>
+
+## Key takeaways
+
+- **Send everything, wait once**: `send().get()` per record gave 114 records/s; firing all sends and joining once
+  gave 15 520 through the same template.
+- **The template adds nothing to the wire**: chapter 02's `linger.ms`, `batch.size` and compression still decide
+  throughput, 19.8K → 96.3K records/s here.
+- **Derive templates, do not declare them**: `new KafkaTemplate<>(factory, overrides)` with its own `client.id`; a
+  second template bean switches Boot's off.
 
 ## When to use what
 
@@ -178,3 +197,7 @@ headers become record headers, and `sendDefault` to `spring.kafka.template.defau
 | tracing across producer and consumer | `spring.kafka.template.observation-enabled=true` + `spring.kafka.listener.observation-enabled=true` and Micrometer Tracing on the classpath |
 | a producer that idles for hours and is transactional | `DefaultKafkaProducerFactory.setMaxAge(...)` below the broker's `transactional.id.expiration.ms` (chapter 19) |
 | graceful shutdown must not lose records | `spring.kafka.template.close-timeout` ≥ `delivery.timeout.ms` of in-flight batches, or `flush()` before returning |
+
+---
+
+← [14 · Spring Boot wiring and the `spring.kafka.*` mapping](14-spring-boot-setup.md) · [Index](README.md) · [16 · `@KafkaListener` and acknowledgment modes](16-spring-listeners-acks.md) →

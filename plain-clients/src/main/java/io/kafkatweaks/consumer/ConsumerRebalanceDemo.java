@@ -161,7 +161,7 @@ public final class ConsumerRebalanceDemo implements Demo {
         }
     }
 
-    /** One consumer in its own (virtual) thread, reporting every assignment change to the shared timeline. */
+    /** One consumer in its own platform thread, reporting every assignment change to the shared timeline. */
     static final class Member {
         final String name;
         final AtomicBoolean running = new AtomicBoolean(true);

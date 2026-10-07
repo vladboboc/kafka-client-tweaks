@@ -1,6 +1,10 @@
 # 13 · Serialization with the Schema Registry and Avro
 
-**Demo:** `avro-roundtrip` · [AvroDemo.java](../plain-clients/src/main/java/io/kafkatweaks/avro/AvroDemo.java) · schema: [Order.avsc](../tweaks-common/src/main/avro/Order.avsc) · **Recipes:** [AvroClients.java](../plain-clients/src/main/java/io/kafkatweaks/avro/recipe/AvroClients.java), [AvroTrust.java](../tweaks-common/src/main/java/io/kafkatweaks/avro/AvroTrust.java)
+> **Level:** Practitioner · **Read first:** [01](01-producer-baseline.md), [07](07-consumer-fetch.md) · **Time:** ~5 min read, ~1 min run · [Glossary](glossary.md)
+>
+> **Demo:** `avro-roundtrip` (`./demo 13`) · [AvroDemo.java](../plain-clients/src/main/java/io/kafkatweaks/avro/AvroDemo.java) · schema: [Order.avsc](../tweaks-common/src/main/avro/Order.avsc) · **Recipes:** [AvroClients.java](../plain-clients/src/main/java/io/kafkatweaks/avro/recipe/AvroClients.java), [AvroTrust.java](../tweaks-common/src/main/java/io/kafkatweaks/avro/AvroTrust.java) · **In Spring:** [21](21-spring-serialization.md)
+>
+> **In one sentence:** Avro with the Schema Registry puts 37.39 bytes per record on the wire against 129 for JSON, and the registry rejects incompatible schema changes at registration, before any consumer sees them.
 
 ## The problem
 
@@ -36,8 +40,13 @@ schema once, caches it, and decodes. Neither side sends the schema itself.
 | `normalize.schemas` | `false` | ignore irrelevant ordering when comparing schemas |
 | subject compatibility (registry) | `BACKWARD` | `BACKWARD`, `FORWARD`, `FULL`, their `_TRANSITIVE` variants, `NONE` |
 
+<details>
+<summary>Deep dive: how the generated Order class is built</summary>
+
 Build side: `avro-maven-plugin` generates `io.kafkatweaks.avro.generated.Order` from the `.avsc` with
 `stringType=String` and `enableDecimalLogicalType=true` (`BigDecimal` instead of `ByteBuffer`).
+
+</details>
 
 ## The code that matters
 
@@ -142,10 +151,12 @@ v3 in; the demo restores `BACKWARD` afterwards.
 - **The first send is slow, the rest are not.** Registration/lookup is an HTTP round trip once per
   schema per serializer instance; after that the id is cached. Deserializers cache by id the same way.
 - **`SecurityException: Forbidden io.kafkatweaks.avro.generated.Order`** is Avro ≥ 1.12.1 refusing to
-  instantiate a class by name (CVE-2024-47561 hardening). `specific.avro.reader=true` takes exactly that
-  path. `AvroTrust` adds the generated classes to Avro's `ClassSecurityValidator`; the alternative is the
-  `-Dorg.apache.avro.SERIALIZABLE_PACKAGES=...` JVM flag, which has to be remembered in every runtime.
-  Producers and `GenericRecord` consumers are unaffected.
+  resolve a class by name (CVE-2024-47561 hardening). With the Confluent 8.3 serializers it fires on both
+  sides: the serializer resolves the record's class to its schema (the demo's first send fails before
+  `AvroTrust`), and `specific.avro.reader=true` resolves the schema's name to a class. `AvroTrust` adds the
+  generated classes to Avro's `ClassSecurityValidator`, the live validator that replaced the read-once
+  `org.apache.avro.SERIALIZABLE_PACKAGES` system property in Avro 1.12.2. Only `GenericRecord` consumers,
+  which never instantiate generated classes, are unaffected.
 - **`auto.register.schemas=false` + `use.latest.version=true`** is the production pair: schemas are
   registered by a pipeline, the application can only produce what is already agreed. The demo shows the
   failure you get when the subject is empty.
@@ -155,6 +166,15 @@ v3 in; the demo restores `BACKWARD` afterwards.
   failure to consumers at read time.
 - **Old data, new shape**: reading v1 records with v2 as reader schema fills the new `channel` field from
   its default. That is what backward compatibility buys: deploy consumers first, producers later.
+
+## Key takeaways
+
+- **Avro ships values, not field names**: 37.39 bytes per record against 129 for JSON, behind a 5-byte header
+  (magic byte + schema id).
+- **Production producers run `auto.register.schemas=false` + `use.latest.version=true`**: schemas are registered
+  from CI, and a send against an unknown subject fails instead of creating a version.
+- **Compatibility is checked per subject, at registration**: under `BACKWARD` a new field needs a default; v3
+  without one was rejected with HTTP 409.
 
 ## When to use what
 
@@ -167,3 +187,7 @@ v3 in; the demo restores `BACKWARD` afterwards.
 | independent deploys both ways | `FULL` (+ `_TRANSITIVE` when consumers may lag several versions) |
 | generated classes on the consumer | `specific.avro.reader=true` + `AvroTrust` |
 | dynamic consumers (routers, archivers) | `GenericRecord` (`specific.avro.reader=false`), no class trust needed |
+
+---
+
+← [12 · Client resilience and operations](12-client-resilience.md) · [Index](README.md) · [14 · Spring Boot wiring and the `spring.kafka.*` mapping](14-spring-boot-setup.md) →

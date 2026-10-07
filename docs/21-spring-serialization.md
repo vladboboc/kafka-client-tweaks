@@ -1,6 +1,10 @@
 # 21 · Serialization in Spring: JSON and Avro
 
-**Demo:** `spring-serdes` · [SerdesDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/SerdesDemo.java) · [application-spring-serdes.yml](../spring-boot-kafka/src/main/resources/application-spring-serdes.yml) · **Recipes:** [SerdesConfig.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/recipe/SerdesConfig.java), [SerdesListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/recipe/SerdesListeners.java)
+> **Level:** Practitioner · **Read first:** [13](13-avro-schema-registry.md), [14](14-spring-boot-setup.md) · **Time:** ~10 min read, ~1 min run · [Glossary](glossary.md)
+>
+> **Demo:** `spring-serdes` (`./demo 21`) · [SerdesDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/SerdesDemo.java) · [application-spring-serdes.yml](../spring-boot-kafka/src/main/resources/application-spring-serdes.yml) · **Recipes:** [SerdesConfig.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/recipe/SerdesConfig.java), [SerdesListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/serdes/recipe/SerdesListeners.java) · **Plain-client version:** [13](13-avro-schema-registry.md)
+>
+> **In one sentence:** Serializers are properties: a `__TypeId__` token mapped on both sides decouples producer and consumer classes, per-listener `properties` change the type, and Avro through a second factory is 37.4 bytes against 129 for JSON.
 
 ## The problem
 
@@ -173,9 +177,24 @@ subjects in the registry for spring.* topics: spring.avro-value
   Confluent classes on Boot's default factories.
 - **129 + 15 bytes versus 37.4.** The same order data: JSON with its field names and the type header is 3.9× the
   Avro record, whose only overhead is the 5-byte schema-id prefix. Chapter 13's numbers, reproduced through Spring.
+
+<details>
+<summary>Deep dive: JSON keys</summary>
+
 - **Keys are still strings.** Nothing here touched `key-serializer`; keys have their own `__KeyTypeId__` header and
   `spring.json.key.default.type` if you ever serialize them as JSON, which is rarely a good idea (partitioning by the
   bytes of a JSON document is fragile).
+
+</details>
+
+## Key takeaways
+
+- **Put a token, not a class name, in `__TypeId__`.** Map `spring.json.type.mapping` on both sides; forgetting the
+  consumer half turns every record into a deserialization error.
+- **Per-listener `properties` beat a factory per type.** `serdes-view` and `serdes-mapped` shared Boot's consumer
+  factory; a second factory is only needed when the deserializer class changes.
+- **Avro through Spring is chapter 13 with the properties moved.** 37.4 bytes per record against 129 + 15 for JSON;
+  `AvroTrust.trustGeneratedClasses()` belongs before the first send.
 
 ## When to use what
 
@@ -189,3 +208,7 @@ subjects in the registry for spring.* topics: spring.avro-value
 | a contract checked at registration, compact records, non-Spring consumers | Confluent Avro (chapter 13): `KafkaAvroSerializer` / `KafkaAvroDeserializer` through `spring.kafka.*.properties`, `auto.register.schemas=false` in production, `AvroTrust` before the first send |
 | records that may not deserialize | `ErrorHandlingDeserializer` around the real one (chapter 18) |
 | the listener wants to see `__TypeId__` | `spring.json.remove.type.headers=false`, or the converter wiring |
+
+---
+
+← [20 · Share consumers (queues) in Spring](20-spring-share-consumers.md) · [Index](README.md) · [22 · Testing Spring Kafka applications](22-spring-testing.md) →

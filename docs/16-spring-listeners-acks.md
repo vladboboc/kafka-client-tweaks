@@ -1,6 +1,10 @@
 # 16 · `@KafkaListener` and acknowledgment modes
 
-**Demo:** `spring-listener-acks` · [ListenerAcksDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/ListenerAcksDemo.java) · [application-spring-listener-acks.yml](../spring-boot-kafka/src/main/resources/application-spring-listener-acks.yml) · **Recipes:** [AckModeListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/recipe/AckModeListeners.java), [ReplayListener.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/recipe/ReplayListener.java), [ListenerRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/recipe/ListenerRecipe.java)
+> **Level:** Essentials · **Read first:** [14](14-spring-boot-setup.md), [08](08-consumer-offsets.md) · **Time:** ~10 min read, ~1 min run · [Glossary](glossary.md)
+>
+> **Demo:** `spring-listener-acks` (`./demo 16`) · [ListenerAcksDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/ListenerAcksDemo.java) · [application-spring-listener-acks.yml](../spring-boot-kafka/src/main/resources/application-spring-listener-acks.yml) · **Recipes:** [AckModeListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/recipe/AckModeListeners.java), [ReplayListener.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/recipe/ReplayListener.java), [ListenerRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/listener/recipe/ListenerRecipe.java) · **Plain-client version:** [08](08-consumer-offsets.md)
+>
+> **In one sentence:** In spring-kafka the listener container commits, by `AckMode`: RECORD made 6 000 commits in 15.8 s where BATCH made 12; `nack`, seeks on assignment, filters and interceptors complete the toolkit.
 
 ## The problem
 
@@ -191,6 +195,15 @@ consumer is paused for one second, and polling resumes *at* the nacked record.
   `spring.kafka.listener.auto-startup=false` and the registry a service can start listeners after a warm-up or a
   migration, and stop them for maintenance, without a restart.
 
+## Key takeaways
+
+- **The container commits, by `AckMode`**: `BATCH` (the default) committed 12 times for 6 000 records; `RECORD`
+  committed 6 000 times and took 15.8 s instead of ~110 ms.
+- **`nack(Duration)` retries one record after a pause**: MANUAL modes only; acknowledged offsets are committed, the
+  rest of the poll is dropped, and `poll-timeout` sets the pause's resolution.
+- **Seek on assignment to replay**: `seekRelative(-100)` in `ConsumerSeekAware` gave every partition its last 100
+  records, whatever the group had committed.
+
 ## When to use what
 
 | Situation | Setting |
@@ -205,3 +218,7 @@ consumer is paused for one second, and polling resumes *at* the nacked record.
 | skip records cheaply | `RecordFilterStrategy` named in `filter`; global when typed `<Object,Object>` |
 | tracing, MDC, audit for every record | one `RecordInterceptor<Object,Object>` bean |
 | a listener needs its own consumer settings | `@KafkaListener(properties = {"max.poll.records:50"})` |
+
+---
+
+← [15 · KafkaTemplate](15-spring-kafkatemplate.md) · [Index](README.md) · [17 · Concurrency, batch listeners and back-pressure](17-spring-concurrency-batch.md) →

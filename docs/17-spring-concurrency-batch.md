@@ -1,6 +1,10 @@
 # 17 · Concurrency, batch listeners and back-pressure
 
-**Demo:** `spring-concurrency` · [ConcurrencyDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/ConcurrencyDemo.java) · [application-spring-concurrency.yml](../spring-boot-kafka/src/main/resources/application-spring-concurrency.yml) · **Recipes:** [ParallelListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/recipe/ParallelListeners.java), [ConcurrencyRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/recipe/ConcurrencyRecipe.java), [BackPressure.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/recipe/BackPressure.java)
+> **Level:** Practitioner · **Read first:** [16](16-spring-listeners-acks.md), [10](10-consumer-parallel.md) · **Time:** ~10 min read, ~2 min run · [Glossary](glossary.md)
+>
+> **Demo:** `spring-concurrency` (`./demo 17`) · [ConcurrencyDemo.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/ConcurrencyDemo.java) · [application-spring-concurrency.yml](../spring-boot-kafka/src/main/resources/application-spring-concurrency.yml) · **Recipes:** [ParallelListeners.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/recipe/ParallelListeners.java), [ConcurrencyRecipe.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/recipe/ConcurrencyRecipe.java), [BackPressure.java](../spring-boot-kafka/src/main/java/io/kafkatweaks/spring/parallel/recipe/BackPressure.java) · **Plain-client version:** [07](07-consumer-fetch.md), [10](10-consumer-parallel.md)
+>
+> **In one sentence:** Three ways to process more records at once in spring-kafka: `concurrency` up to the partition count (501 → 2 098 records/s), batch listeners for bulk work, and `asyncAcks` workers, with `pause()`/`resume()` as the brake.
 
 ## The problem
 
@@ -187,6 +191,15 @@ followed by the two events the container published (`ConsumerPausedEvent [spring
   went quiet), pause/resume events show back-pressure at work, `NonResponsiveConsumerEvent` catches a stuck
   poll loop before `max.poll.interval.ms` does.
 
+## Key takeaways
+
+- **`concurrency` scales until partitions run out**: 1 → 6 consumers took 501 → 2 098 records/s; 8 consumers on 6
+  partitions left two idle and added nothing.
+- **A batch listener changes the cost model, not the records**: 2 ms per call instead of per record gave 83 105
+  records/s; worth it only when the work really is bulk.
+- **`asyncAcks` keeps per-partition order with parallel workers**: one consumer, six workers, 1 608 records/s; the
+  container commits contiguous prefixes and pauses until each poll is fully acknowledged.
+
 ## When to use what
 
 | Situation | Setting |
@@ -199,3 +212,7 @@ followed by the two events the container published (`ConsumerPausedEvent [spring
 | "we are caught up" signal | `idle-event-interval` + `@EventListener(ListenerContainerIdleEvent)` |
 | a container setting Boot has no key for | a second factory built with `ConcurrentKafkaListenerContainerFactoryConfigurer`, chosen by `containerFactory` |
 | rolling restarts without rebalances | `group.instance.id` (static membership); concurrent children get `-n` suffixes for free |
+
+---
+
+← [16 · `@KafkaListener` and acknowledgment modes](16-spring-listeners-acks.md) · [Index](README.md) · [18 · Error handling, retries, dead letters and `@RetryableTopic`](18-spring-error-handling-retry.md) →

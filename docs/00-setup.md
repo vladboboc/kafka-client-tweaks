@@ -1,5 +1,8 @@
 # 00 · Setup and how to run a chapter
 
+New to Kafka? Read the [primer](primer.md) alongside this page: it explains partitions, offsets, replicas and consumer
+groups on the cluster started below. The [docs index](README.md) suggests a reading order for your level.
+
 ## What you need
 
 | Tool | Version | Why |
@@ -33,6 +36,16 @@ Cluster-wide defaults that the chapters lean on (see the comments in [docker-com
 `default.replication.factor=3`, `min.insync.replicas=2`, `auto.create.topics.enable=false`.
 
 ## Run a demo
+
+The short way is the `demo` script at the repository root: give it the chapter number, then any arguments.
+
+```bash
+./demo 02 records=50000 payload=random
+```
+
+On Windows run `.\demo.cmd 02 records=50000 payload=random` from PowerShell, or `demo.cmd …` from `cmd.exe`.
+Chapters 01–13 go to the plain module, 14–21 to the Spring module, and 22 runs the Spring test suite. `./demo plain`
+and `./demo spring` list the demos. The script prints the Maven command it runs, which is the long form below.
 
 Every demo is started the same way. Without arguments you get the list:
 
@@ -146,3 +159,7 @@ The demos share the helpers of the `tweaks-common` module (package `io.kafkatwea
 | `Topics` | AdminClient chores: create topics with a chosen partition count, reset a group, show assignments, lag, ISR |
 | `Seed` | fills a topic for the consumer chapters, only if it does not already hold enough records |
 | `Payloads`, `Order`, `JsonSerde` | test data: compressible JSON, incompressible random text, a small domain record |
+
+---
+
+← [Primer · Kafka in 20 minutes](primer.md) · [Index](README.md) · [01 · Producer anatomy, defaults and metrics](01-producer-baseline.md) →

@@ -1,6 +1,10 @@
 # 01 · Producer anatomy, defaults and metrics
 
-**Demo:** `producer-baseline` · [ProducerBaselineDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerBaselineDemo.java) · **Recipe:** [ProducerBasics.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ProducerBasics.java)
+> **Level:** Essentials · **Read first:** [Primer](primer.md) · **Time:** ~5 min read, ~1 min run · [Glossary](glossary.md)
+>
+> **Demo:** `producer-baseline` (`./demo 01`) · [ProducerBaselineDemo.java](../plain-clients/src/main/java/io/kafkatweaks/producer/ProducerBaselineDemo.java) · **Recipe:** [ProducerBasics.java](../plain-clients/src/main/java/io/kafkatweaks/producer/recipe/ProducerBasics.java) · **In Spring:** [15](15-spring-kafkatemplate.md)
+>
+> **In one sentence:** What happens between `send()` and the callback, which 4.x defaults apply, and how to read the producer's metrics: 5 883 records/s asynchronously from one thread, ~15 ms per record with `send().get()`.
 
 Before tuning anything, know what happens between `send()` and the callback, what the defaults are, and where
 the numbers come from. Every later producer chapter changes one group of knobs and compares against this run.
@@ -103,6 +107,9 @@ Your absolute numbers will differ; the shape will not.
 
 ## Reading the numbers
 
+<details>
+<summary>Deep dive: the producer's throughput ceiling</summary>
+
 **Why is p50 ack latency 1.6 s when the broker answers in 67 ms?** Because the loop hands records to the
 accumulator far faster than the sender can drain them, and every record queues behind full batches. The
 producer's ceiling here is
@@ -115,6 +122,8 @@ throughput ≈ brokers × max.in.flight × batch.size / request-latency
 which is exactly the 3.2 MB/s measured. `record-queue-time-avg` (1561 ms) is the symptom; the cures are the
 whole of chapter 02: bigger batches, compression, or more partitions/brokers.
 
+</details>
+
 **Why does `record-send-rate` say 599 when we measured 5883 records/s?** Kafka's rate metrics are computed
 over a window of at least `metrics.sample.window.ms × (metrics.num.samples − 1)` = 30 s. A 3.4 s run is
 divided by 30 s. In a long-running service the metric is right; in a short benchmark trust the elapsed-time
@@ -123,6 +132,15 @@ figure. `*-total` counters are always exact.
 **Metrics are per producer instance.** A fresh producer reports `NaN`/0 (shown in the demo). Give every
 producer a meaningful `client.id`: it becomes the `client-id` tag on every metric and appears in broker logs
 and quotas.
+
+## Key takeaways
+
+- **Send asynchronously and check the callback.** One thread pushed 5 883 records/s that way; `send().get()` waits a
+  full round trip (~15 ms here) for every record.
+- **The 4.x defaults are already safe.** `acks=all` and idempotence are on out of the box; later chapters tune for
+  throughput or latency, not for safety.
+- **In short runs, trust elapsed time over `*-rate` metrics.** They divide by a 30 s window: `record-send-rate` said
+  599 while the run measured 5 883 records/s.
 
 ## When to touch what
 
@@ -133,3 +151,7 @@ and quotas.
 | control which partition gets what | keys, `partitioner.*`, custom partitioner | 04 |
 | lowest possible latency | `linger.ms=0`, small batches, no compression | 05 |
 | atomic writes across partitions, or exactly-once consume-transform-produce | `transactional.id` | 06 |
+
+---
+
+← [00 · Setup and how to run a chapter](00-setup.md) · [Index](README.md) · [02 · Throughput: batching, compression and the accumulator](02-producer-batching-compression.md) →

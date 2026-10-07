@@ -1,6 +1,10 @@
 # 11 · Queues for Kafka: share groups
 
-**Demo:** `consumer-share` · [ConsumerShareDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerShareDemo.java) · **Recipe:** [ShareWorker.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/ShareWorker.java)
+> **Level:** Deep dive · **Read first:** [08](08-consumer-offsets.md) · **Time:** ~5 min read, ~1 min run · [Glossary](glossary.md)
+>
+> **Demo:** `consumer-share` (`./demo 11`) · [ConsumerShareDemo.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/ConsumerShareDemo.java) · **Recipe:** [ShareWorker.java](../plain-clients/src/main/java/io/kafkatweaks/consumer/recipe/ShareWorker.java) · **In Spring:** [20](20-spring-share-consumers.md)
+>
+> **In one sentence:** Share groups (KIP-932) hand out records, not partitions: 4 consumers on 3 partitions all got work, and per-record `ACCEPT`/`RELEASE`/`REJECT` gives retries and dead-lettering without retry topics.
 
 ## The problem
 
@@ -179,6 +183,15 @@ reported without error because it changed nothing; B had already decided those r
 - **Share groups coexist with consumer groups** on the same topic: a share group is just another
   reader with its own state. Nothing changes for producers.
 
+## Key takeaways
+
+- **Share groups hand out records, not partitions.** Four consumers on three partitions all got work, with no
+  duplicates; in a consumer group the fourth would sit idle.
+- **Explicit acks are the queue policy.** `RELEASE` retries one record (`deliveryCount` + 1), `REJECT` dead-letters
+  it: 2 940 accepted + 60 rejected = 3 000, 420 retried once.
+- **Size `share.record.lock.duration.ms` above your slowest honest handler.** A consumer silent past the 2 s lock
+  lost its 60 records to another member; its late acknowledgement did not count.
+
 ## When to use what
 
 | Workload | Use |
@@ -188,3 +201,7 @@ reported without error because it changed nothing; B had already decided those r
 | retry-with-backoff and dead-letter semantics without retry topics | share group: `RELEASE` + `share.delivery.count.limit`, `REJECT` for poison |
 | long-running handlers | `share.record.lock.duration.ms` ≥ worst case, or `AcknowledgeType.RENEW` |
 | Spring | spring-kafka 4.x: `@KafkaListener` on a share consumer container factory, `ShareAckMode` |
+
+---
+
+← [10 · Scaling and parallelism](10-consumer-parallel.md) · [Index](README.md) · [12 · Client resilience and operations](12-client-resilience.md) →
