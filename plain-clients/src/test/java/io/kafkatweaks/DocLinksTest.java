@@ -53,7 +53,7 @@ class DocLinksTest {
         var problems = new ArrayList<String>();
         for (Path chapter : chapters()) {
             String name = chapter.getFileName().toString();
-            String text = Files.readString(chapter);
+            String text = Files.readString(chapter).replace("\r\n", "\n");   // a Windows checkout has CRLF line endings
             if (!name.startsWith("00-")) {
                 if (!text.contains("> **Level:**")) {
                     problems.add(name + ": no header card (> **Level:** ...)");
