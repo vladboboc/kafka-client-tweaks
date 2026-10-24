@@ -82,7 +82,8 @@ class DocLinksTest {
         while (m.find()) {
             docs.add(m.group(1));
         }
-        assertThat(docs).hasSize(21);
+        // 21 chapters have demos; a chapter may have several (13: avro-roundtrip and avro-compatibility).
+        assertThat(docs.stream().distinct()).hasSize(21);
         assertThat(docs).allSatisfy(doc -> assertThat(REPO.resolve("docs").resolve(doc)).exists());
     }
 

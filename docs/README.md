@@ -68,7 +68,7 @@ flowchart LR
 | 10 | [Scaling and parallelism](10-consumer-parallel.md) | Practitioner | `./demo 10` |
 | 11 | [Queues for Kafka: share groups](11-consumer-share-groups.md) | Deep dive | `./demo 11` |
 | 12 | [Client resilience and operations](12-client-resilience.md) | Practitioner | `./demo 12` |
-| 13 | [Schema Registry and Avro](13-avro-schema-registry.md) | Practitioner | `./demo 13` |
+| 13 | [Schema Registry and Avro](13-avro-schema-registry.md) | Practitioner | `./demo 13`, `./demo avro-compatibility` |
 
 ## Part 2 · Spring Boot (`spring-boot-kafka`)
 

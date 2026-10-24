@@ -1,8 +1,8 @@
 # 13 · Serialization with the Schema Registry and Avro
 
-> **Level:** Practitioner · **Read first:** [01](01-producer-baseline.md), [07](07-consumer-fetch.md) · **Time:** ~5 min read, ~1 min run · [Glossary](glossary.md)
+> **Level:** Practitioner · **Read first:** [01](01-producer-baseline.md), [07](07-consumer-fetch.md) · **Time:** ~10 min read, ~1 min per run · [Glossary](glossary.md)
 >
-> **Demo:** `avro-roundtrip` (`./demo 13`) · [AvroDemo.java](../plain-clients/src/main/java/io/kafkatweaks/avro/AvroDemo.java) · schema: [Order.avsc](../tweaks-common/src/main/avro/Order.avsc) · **Recipes:** [AvroClients.java](../plain-clients/src/main/java/io/kafkatweaks/avro/recipe/AvroClients.java), [AvroTrust.java](../tweaks-common/src/main/java/io/kafkatweaks/avro/AvroTrust.java) · **In Spring:** [21](21-spring-serialization.md)
+> **Demos:** `avro-roundtrip` (`./demo 13`) · [AvroDemo.java](../plain-clients/src/main/java/io/kafkatweaks/avro/AvroDemo.java); `avro-compatibility` (`./demo avro-compatibility`) · [AvroCompatibilityDemo.java](../plain-clients/src/main/java/io/kafkatweaks/avro/AvroCompatibilityDemo.java) · schema: [Order.avsc](../tweaks-common/src/main/avro/Order.avsc) · **Recipes:** [AvroClients.java](../plain-clients/src/main/java/io/kafkatweaks/avro/recipe/AvroClients.java), [SchemaPipeline.java](../plain-clients/src/main/java/io/kafkatweaks/avro/recipe/SchemaPipeline.java), [AvroTrust.java](../tweaks-common/src/main/java/io/kafkatweaks/avro/AvroTrust.java) · **In Spring:** [21](21-spring-serialization.md)
 >
 > **In one sentence:** Avro with the Schema Registry puts 37.39 bytes per record on the wire against 129 for JSON, and the registry rejects incompatible schema changes at registration, before any consumer sees them.
 
@@ -142,7 +142,8 @@ subjects now in the registry: [io.kafkatweaks.avro.generated.Order, tweaks.avro-
 
 Reading the v1 records with v2 as the reader schema (`use.latest.version=true` on a `GenericRecord`
 consumer) shows the new `channel` field filled with its default `web`. Setting the subject to `NONE` lets
-v3 in; the demo restores `BACKWARD` afterwards.
+v3 in; the demo restores `BACKWARD` afterwards. [Writer schema vs reader schema](#writer-schema-vs-reader-schema-backward-vs-forward)
+below goes through this record by record, in both directions.
 
 ## Reading the numbers
 
@@ -167,14 +168,185 @@ v3 in; the demo restores `BACKWARD` afterwards.
 - **Old data, new shape**: reading v1 records with v2 as reader schema fills the new `channel` field from
   its default. That is what backward compatibility buys: deploy consumers first, producers later.
 
+## Writer schema vs reader schema: BACKWARD vs FORWARD
+
+> **Demo:** `avro-compatibility` (`./demo avro-compatibility`) · [AvroCompatibilityDemo.java](../plain-clients/src/main/java/io/kafkatweaks/avro/AvroCompatibilityDemo.java) · **Recipe:** [SchemaPipeline.java](../plain-clients/src/main/java/io/kafkatweaks/avro/recipe/SchemaPipeline.java), the two consumers in [AvroClients.java](../plain-clients/src/main/java/io/kafkatweaks/avro/recipe/AvroClients.java)
+
+Every Avro record is decoded with two schemas:
+
+- **Writer schema**: the one the producer serialized with. Its id travels in bytes 1-4 of the record (see
+  [the wire format](#the-wire-format)); the deserializer fetches the schema from the registry by that id.
+- **Reader schema**: the shape the consumer wants. With `specific.avro.reader=true` it is the schema the generated
+  class was compiled from (`Order` is v1), looked up by the writer schema's full name, so a record's name and
+  namespace must never change. With `use.latest.version=true` it is the subject's latest version. With neither, it
+  is the writer schema itself: a `GenericRecord` in whatever shape was written.
+
+Avro resolves the writer schema into the reader schema field by field, by name. A writer field the reader does not
+know is skipped. A reader field the writer did not have is filled from its default, and without a default the
+record cannot be read. That one rule is all compatibility is about. The level names the direction the registry
+checks, seen from the NEW schema:
+
+| Level | The registry checks that... | So it is safe to |
+|---|---|---|
+| `BACKWARD` (default) | the new schema, as reader, can read data written with the previous one | upgrade consumers first |
+| `FORWARD` | the previous schema, as reader, can read data written with the new one | upgrade producers first |
+| `FULL` | both | deploy in any order |
+
+So "a consumer compiled with v1 reads records whose schema id is v2" is the **FORWARD** direction (old reader, new
+writer). It works for the usual change, adding a field with a default, because that change is `FULL`: it passes
+both checks. `BACKWARD` alone does not promise it. The demo registers a v3 that `BACKWARD` accepts and that the v1
+consumer cannot read.
+
+### The code that matters
+
+The two reader-schema choices, from [AvroClients.java](../plain-clients/src/main/java/io/kafkatweaks/avro/recipe/AvroClients.java):
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/avro/recipe/AvroClients.java -->
+```java
+public static Map<String, Object> specificConsumer(String schemaRegistryUrl) {
+    return Map.of(
+            ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, KafkaAvroDeserializer.class.getName(),
+            AbstractKafkaSchemaSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG, schemaRegistryUrl,
+            KafkaAvroDeserializerConfig.SPECIFIC_AVRO_READER_CONFIG, true);
+}
+// ...
+public static Map<String, Object> latestSchemaConsumer(String schemaRegistryUrl) {
+    return Map.of(
+            ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, KafkaAvroDeserializer.class.getName(),
+            AbstractKafkaSchemaSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG, schemaRegistryUrl,
+            AbstractKafkaSchemaSerDeConfig.USE_LATEST_VERSION, true);
+}
+```
+
+and the pipeline side, from [SchemaPipeline.java](../plain-clients/src/main/java/io/kafkatweaks/avro/recipe/SchemaPipeline.java):
+
+<!-- recipe: plain-clients/src/main/java/io/kafkatweaks/avro/recipe/SchemaPipeline.java -->
+```java
+public static void pinCompatibility(SchemaRegistryClient registry, String subject, String level)
+        throws IOException, RestClientException {
+    // BACKWARD (registry default): the new schema can read data written with the previous one. Upgrade consumers first.
+    // FORWARD: the previous schema can read data written with the new one. Upgrade producers first.
+    // FULL: both. Add _TRANSITIVE to check against every registered version instead of only the latest.
+    registry.updateCompatibility(subject, level);
+}
+// ...
+public static SchemaCompatibility.SchemaPairCompatibility canRead(Schema reader, Schema writer) {
+    // BACKWARD asks canRead(newSchema, oldSchema); FORWARD asks canRead(oldSchema, newSchema).
+    return SchemaCompatibility.checkReaderWriterCompatibility(reader, writer);
+}
+```
+
+- **`specificConsumer`** is the consumer compiled with v1. It keeps working as long as every version written to the
+  topic is `FORWARD` (or `FULL`) compatible with v1.
+- **`latestSchemaConsumer`** reads every record in the newest shape. It needs `BACKWARD`: old records must fit the
+  new schema.
+- **`pinCompatibility`** is the knob, per subject. `SchemaPipeline.register` is the CI step that the level guards
+  (producers run `auto.register.schemas=false`). **`canRead`** runs Avro's own check with no registry, so the
+  producer's build can test a schema change before it gets anywhere near the registry
+  ([SchemaPipelineTest](../plain-clients/src/test/java/io/kafkatweaks/avro/recipe/SchemaPipelineTest.java) asserts
+  the matrix below).
+
+### Run it
+
+```bash
+./mvnw -q -pl plain-clients -am compile exec:java -Dexec.args="avro-compatibility"
+```
+
+No arguments. It recreates `tweaks.avro-compat-backward` and `tweaks.avro-compat-forward` (one partition each) and
+deletes their subjects first, so every run starts at version 1.
+
+### What you should see
+
+**1. Three changes, both directions**, Avro only (`SchemaPipeline.canRead`):
+
+```
+| change to v1                 | new reader, old data (BACKWARD)                   | old reader, new data (FORWARD)                      | satisfies     |
+| add channel (default "web")  | yes                                               | yes                                                 | FULL          |
+| add salesRep (no default)    | no: READER_FIELD_MISSING_DEFAULT_VALUE (salesRep) | yes                                                 | FORWARD only  |
+| drop customerId (no default) | yes                                               | no: READER_FIELD_MISSING_DEFAULT_VALUE (customerId) | BACKWARD only |
+```
+
+**2. Subject at `BACKWARD`.** The pipeline registers v1, v2 and v3. The "add salesRep" candidate is rejected:
+
+```
+| candidate                             | register under BACKWARD                                |
+| v1 (the compiled Order)               | OK, id 1, version 1                                    |
+| v2 = v1, add channel (default "web")  | OK, id 5, version 2                                    |
+| v2, add salesRep (no default)         | REJECTED 409/40901: READER_FIELD_MISSING_DEFAULT_VALUE |
+| v3 = v2, drop customerId (no default) | OK, id 6, version 3                                    |
+```
+
+One record is produced with each writer schema, then two consumers read the topic:
+
+```
+reader schema v1: compiled Order class
+| offset | writer schema (id in the record) | result                                          |
+|      0 | id 1 = v1                        | OK  Order(orderId=ORD-1, customerId=customer-1) |
+|      1 | id 5 = v2                        | OK  Order(orderId=ORD-2, customerId=customer-2) |
+|      2 | id 6 = v3                        | FAILED  missing required field customerId       |
+
+reader schema latest registered: v3
+| offset | writer schema (id in the record) | result                                           |
+|      0 | id 1 = v1                        | OK  GenericRecord(orderId=ORD-1, channel=web)    |
+|      1 | id 5 = v2                        | OK  GenericRecord(orderId=ORD-2, channel=mobile) |
+|      2 | id 6 = v3                        | OK  GenericRecord(orderId=ORD-3, channel=mobile) |
+```
+
+**3. Subject at `FORWARD`.** The same steps. This time the drop is rejected and the field without a default
+gets in:
+
+```
+| candidate                            | register under FORWARD                                 |
+| v1 (the compiled Order)              | OK, id 1, version 1                                    |
+| v2 = v1, add channel (default "web") | OK, id 5, version 2                                    |
+| v2, drop customerId (no default)     | REJECTED 409/40901: READER_FIELD_MISSING_DEFAULT_VALUE |
+| v3 = v2, add salesRep (no default)   | OK, id 7, version 3                                    |
+
+reader schema v1: compiled Order class
+| offset | writer schema (id in the record) | result                                          |
+|      0 | id 1 = v1                        | OK  Order(orderId=ORD-1, customerId=customer-1) |
+|      1 | id 5 = v2                        | OK  Order(orderId=ORD-2, customerId=customer-2) |
+|      2 | id 7 = v3                        | OK  Order(orderId=ORD-3, customerId=customer-3) |
+
+reader schema latest registered: v3
+| offset | writer schema (id in the record) | result                                                                                 |
+|      0 | id 1 = v1                        | FAILED  missing required field salesRep                                                |
+|      1 | id 5 = v2                        | FAILED  missing required field salesRep                                                |
+|      2 | id 7 = v3                        | OK  GenericRecord(orderId=ORD-3, customerId=customer-3, channel=mobile, salesRep=SR-7) |
+```
+
+Schema ids are global: the same schema text gets the same id in both subjects (v1 is id 1 in both), and a schema
+id is never reused after its subject is deleted. Your ids will differ.
+
+### Reading the numbers
+
+- **The v1 consumer decides nothing up front.** It takes the writer schema from each record's id and resolves it
+  into the compiled class. Record 1 (writer v2) was read under both levels: the extra `channel` was skipped.
+- **`BACKWARD` approved v3, and the v1 consumer broke on it** (`missing required field customerId`). `BACKWARD`
+  only checks new-reads-old. That is safe if every consumer is upgraded before any producer writes v3. The
+  latest-schema consumer read all three records and filled `channel=web` into the v1 record.
+- **`FORWARD` rejected the same drop and let `salesRep` in without a default.** The v1 consumer read all three
+  records. The consumer that adopted v3 cannot read v1 or v2 records: think of a replay, a new group starting from
+  `earliest`, or a partition that lags behind. Under `FORWARD`, producers go first, and consumers move to the new
+  reader schema only once the old data has aged out of retention.
+- **In a real `KafkaConsumer` a FAILED row is a stuck partition.** `poll()` throws `RecordDeserializationException`
+  at that offset and keeps throwing until the application seeks past it (in Spring: `ErrorHandlingDeserializer`,
+  [chapter 18](18-spring-error-handling-retry.md)). The demo calls the configured `KafkaAvroDeserializer` itself,
+  record by record, which is what the consumer does internally. That way it can show each record's schema id and
+  carry on after a failure.
+- **`add channel` passed every check.** Adding or removing a field *with a default* is the change both old and new
+  readers survive. `FULL` makes the registry enforce exactly that. Each check compares against the latest version
+  only (v3 was checked against v2). Use the `_TRANSITIVE` variants when consumers may be several versions behind.
+
 ## Key takeaways
 
 - **Avro ships values, not field names**: 37.39 bytes per record against 129 for JSON, behind a 5-byte header
   (magic byte + schema id).
 - **Production producers run `auto.register.schemas=false` + `use.latest.version=true`**: schemas are registered
   from CI, and a send against an unknown subject fails instead of creating a version.
-- **Compatibility is checked per subject, at registration**: under `BACKWARD` a new field needs a default; v3
-  without one was rejected with HTTP 409.
+- **The level names the direction the registry checks**: `BACKWARD` = the new schema reads old data (upgrade
+  consumers first), `FORWARD` = the old schema reads new data (producers first). A consumer compiled with v1 reads
+  v2 records only if v2 is `FORWARD` or `FULL` compatible. `BACKWARD` accepted a v3 that this consumer could not read.
 
 ## When to use what
 
@@ -184,6 +356,8 @@ v3 in; the demo restores `BACKWARD` afterwards.
 | several event types on one topic (per-entity streams) | `RecordNameStrategy` or `TopicRecordNameStrategy` |
 | consumers deploy before producers | `BACKWARD` (default) |
 | producers deploy before consumers | `FORWARD` |
+| consumers compiled against an old class must keep reading new records | `FORWARD` or `FULL` |
+| consumers read everything, old records included, with the newest schema | `BACKWARD` or `FULL` |
 | independent deploys both ways | `FULL` (+ `_TRANSITIVE` when consumers may lag several versions) |
 | generated classes on the consumer | `specific.avro.reader=true` + `AvroTrust` |
 | dynamic consumers (routers, archivers) | `GenericRecord` (`specific.avro.reader=false`), no class trust needed |

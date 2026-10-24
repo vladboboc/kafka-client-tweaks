@@ -24,6 +24,9 @@ import java.util.Map;
  * </pre>
  * The generated classes must be trusted once per JVM before the first send or read (Avro >= 1.12.1, on BOTH sides):
  * {@code AvroTrust.trustGeneratedClasses()} at startup, see {@link io.kafkatweaks.avro.AvroTrust}.
+ * <p>
+ * {@link #specificConsumer} and {@link #latestSchemaConsumer} are the two reader-schema choices the
+ * {@code avro-compatibility} demo puts against BACKWARD and FORWARD subjects, see {@link SchemaPipeline}.
  */
 public final class AvroClients {
 

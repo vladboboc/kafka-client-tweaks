@@ -71,6 +71,10 @@ public final class Run {
         register("avro-roundtrip", "13", "13-avro-schema-registry.md",
                 "Schema Registry + Avro: generated records, wire size vs JSON, auto.register/use.latest/subject strategies, evolution",
                 new io.kafkatweaks.avro.AvroDemo());
+        // Chapter 13's second demo; `./demo 13` keeps running the first one.
+        register("avro-compatibility", "13", "13-avro-schema-registry.md",
+                "writer vs reader schema: a v1-compiled consumer and a latest-schema consumer under BACKWARD and FORWARD",
+                new io.kafkatweaks.avro.AvroCompatibilityDemo());
     }
 
     private Run() {

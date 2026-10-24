@@ -44,6 +44,7 @@ The code behind each row is in the chapter's recipe: [recipes.md](recipes.md) li
 | compact wire format with a contract | Confluent Avro + Schema Registry; `auto.register.schemas=false` + `use.latest.version=true` in production | 13 |
 | several event types on one topic | `value.subject.name.strategy=RecordNameStrategy` / `TopicRecordNameStrategy` | 13 |
 | safe evolution | `BACKWARD` (default): add fields with defaults; consumers upgrade first. `FULL` when both sides deploy independently | 13 |
+| old consumers (compiled against v1) must read v2 records | `FORWARD` or `FULL`: the old reader schema must read the new writer schema; `BACKWARD` does not check that direction | 13 |
 | `SecurityException: Forbidden …` on serialize or deserialize | Avro ≥ 1.12.1 class allow-list: register the generated classes with `ClassSecurityValidator` (`AvroTrust`); 1.12.2 replaced the `SERIALIZABLE_PACKAGES` system property | 13 |
 
 ## Spring Boot (part 2): the same knobs as `spring.kafka.*`

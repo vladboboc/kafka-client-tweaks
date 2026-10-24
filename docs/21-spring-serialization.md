@@ -164,7 +164,7 @@ subjects in the registry for spring.* topics: spring.avro-value
   factory; the annotation's `properties` are merged into the consumer configs, and since Boot instantiates the
   deserializer by class name inside the consumer, each container gets a `JacksonJsonDeserializer` configured its own
   way. A second factory is only needed when the deserializer *class* changes (`serdes-converter`, `serdes-avro`).
-- **`OrderView` proves the schema-evolution point of chapter 13 for JSON.** The consumer's record has two of the
+- **`OrderView` proves the [writer vs reader schema](13-avro-schema-registry.md#writer-schema-vs-reader-schema-backward-vs-forward) point of chapter 13 for JSON**, in the FORWARD direction (old reader, new data). The consumer's record has two of the
   five fields; Jackson (as spring-kafka configures it) ignores unknown properties, so the consumer keeps working when
   the producer adds fields. Removing or renaming one still breaks it silently (`null`), which is what the registry
   would have refused in chapter 13.

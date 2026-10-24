@@ -21,6 +21,7 @@ words in order. Config names are `in code font`; defaults are Kafka 4.3's.
 | **`client.id`** | A client's name; it tags every metric and appears in broker logs and quotas. | [01](01-producer-baseline.md) |
 | **`client.rack` / follower fetching** | A consumer declaring its rack so the broker lets it read from a replica in the same rack instead of the leader. | [12](12-client-resilience.md) |
 | **Commit (offsets)** | Storing a group's position per partition in `__consumer_offsets`, so the next owner of the partition resumes there. | [08](08-consumer-offsets.md) |
+| **Compatibility level (schema)** | Per-subject registry rule for new schema versions. `BACKWARD` (default): the new schema reads old data, upgrade consumers first. `FORWARD`: the old schema reads new data, upgrade producers first. `FULL`: both. `_TRANSITIVE`: against every version. | [13](13-avro-schema-registry.md#writer-schema-vs-reader-schema-backward-vs-forward) |
 | **Compression** | `compression.type` (`lz4`, `snappy`, `zstd`, `gzip`) applied per batch by the producer; brokers store and consumers fetch it compressed. | [02](02-producer-batching-compression.md) |
 | **Consume-transform-produce** | Read from one topic, write results to another, and commit the input offsets in the same transaction: Kafka's exactly-once pipeline. | [06](06-producer-transactions.md) |
 | **Consumer group** | Consumers sharing a `group.id`; each partition is read by exactly one member at a time. | [primer](primer.md#8-consumer-groups-and-rebalancing), [09](09-consumer-rebalance.md) |
@@ -65,6 +66,7 @@ words in order. Config names are `in code font`; defaults are Kafka 4.3's.
 | **Transaction / `transactional.id`** | Atomic writes to several partitions (plus input offsets); the stable id identifies the producer across restarts and fences zombies. | [06](06-producer-transactions.md) |
 | **Watermark commit** | Committing, per partition, only the offset below which every record is done: needed when records of one partition finish out of order. | [10](10-consumer-parallel.md) |
 | **Wire format (Confluent)** | Magic byte `0` + 4-byte schema id + the Avro binary: what the Avro serializer writes. | [13](13-avro-schema-registry.md) |
+| **Writer / reader schema** | Writer: the schema a record was serialized with (its id is in the record). Reader: the schema the consumer decodes into (compiled class or latest version). Avro skips writer-only fields and fills reader-only fields from their defaults. | [13](13-avro-schema-registry.md#writer-schema-vs-reader-schema-backward-vs-forward) |
 
 ## Spring for Apache Kafka
 

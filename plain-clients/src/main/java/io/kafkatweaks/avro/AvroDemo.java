@@ -13,7 +13,6 @@ import io.confluent.kafka.schemaregistry.avro.AvroSchema;
 import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.client.SchemaMetadata;
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
-import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException;
 import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
@@ -60,7 +59,7 @@ public final class AvroDemo implements Demo {
             topics.recreate(TOPIC, 3);
             topics.delete(TOPIC + "-noreg");
         }
-        resetSubjects(registry, SUBJECT, Order.getClassSchema().getFullName(), TOPIC + "-noreg-value");
+        Registry.resetSubjects(registry, SUBJECT, Order.getClassSchema().getFullName(), TOPIC + "-noreg-value");
         log.info("schema registry: {}   subject for {} values: {}", Env.schemaRegistryUrl(), TOPIC, SUBJECT);
 
         roundTrip(args, registry, records);
@@ -79,8 +78,8 @@ public final class AvroDemo implements Demo {
             producer.send(new ProducerRecord<>(TOPIC, "ORD-0", order(0))).get();
             log.warn("unexpected: the untrusted class serialized fine");
         } catch (Exception e) {
-            Throwable root = rootCause(e);
-            log.info("FAILED before AvroTrust: {}: {}", root.getClass().getSimpleName(), firstLine(root.getMessage()));
+            Throwable root = Registry.rootCause(e);
+            log.info("FAILED before AvroTrust: {}: {}", root.getClass().getSimpleName(), Registry.firstLine(root.getMessage()));
         }
         AvroTrust.trustGeneratedClasses();
         log.info("after AvroTrust.trustGeneratedClasses():");
@@ -174,7 +173,7 @@ public final class AvroDemo implements Demo {
             producer.send(new ProducerRecord<>(TOPIC + "-noreg", "k", order(1))).get();
             table.row("auto.register.schemas=false, new subject", "unexpected: succeeded");
         } catch (ExecutionException | org.apache.kafka.common.errors.SerializationException e) {
-            table.row("auto.register.schemas=false, subject has no schema yet", "send fails: " + firstLine(rootCause(e).getMessage()));
+            table.row("auto.register.schemas=false, subject has no schema yet", "send fails: " + Registry.firstLine(Registry.rootCause(e).getMessage()));
         }
 
         Properties recordName = avroProducerProps(args, "avro-recordname");
@@ -198,16 +197,16 @@ public final class AvroDemo implements Demo {
 
     private static void evolution(Args args, SchemaRegistryClient registry) throws Exception {
         log.info("3. evolution. Subject compatibility is {} (registry default BACKWARD: a NEW schema must be able to read data written with the OLD one).",
-                compatibility(registry, SUBJECT));
+                Registry.compatibility(registry, SUBJECT));
         Schema v1 = Order.getClassSchema();
-        Schema v2 = withField(v1, "{\"name\":\"channel\",\"type\":\"string\",\"default\":\"web\"}");
-        Schema v3 = withField(v1, "{\"name\":\"salesRep\",\"type\":\"string\"}");
-        Schema v4 = withFieldType(v1, "currency", Schema.create(Schema.Type.INT));
+        Schema v2 = OrderSchemas.plusChannel(v1);
+        Schema v3 = OrderSchemas.plusSalesRep(v1);
+        Schema v4 = OrderSchemas.withFieldType(v1, "currency", Schema.create(Schema.Type.INT));
 
         var table = new Table("candidate schema", "compatible with v1 under BACKWARD?", "register");
-        table.row("v2 = v1 + channel:string default \"web\"", registry.testCompatibility(SUBJECT, new AvroSchema(v2)), tryRegister(registry, SUBJECT, v2));
-        table.row("v3 = v1 + salesRep:string (NO default)", registry.testCompatibility(SUBJECT, new AvroSchema(v3)), tryRegister(registry, SUBJECT, v3));
-        table.row("v4 = v1 with currency: string -> int", registry.testCompatibility(SUBJECT, new AvroSchema(v4)), tryRegister(registry, SUBJECT, v4));
+        table.row("v2 = v1 + channel:string default \"web\"", registry.testCompatibility(SUBJECT, new AvroSchema(v2)), Registry.tryRegister(registry, SUBJECT, v2));
+        table.row("v3 = v1 + salesRep:string (NO default)", registry.testCompatibility(SUBJECT, new AvroSchema(v3)), Registry.tryRegister(registry, SUBJECT, v3));
+        table.row("v4 = v1 with currency: string -> int", registry.testCompatibility(SUBJECT, new AvroSchema(v4)), Registry.tryRegister(registry, SUBJECT, v4));
         log.info("three candidate schemas for {}\n{}", SUBJECT, table);
 
         log.info("reading the v1 records with the LATEST schema (v2) as reader schema, as a GenericRecord:");
@@ -236,9 +235,9 @@ public final class AvroDemo implements Demo {
 
         log.info("forcing the incompatible v3 in by setting the subject to NONE (what you do NOT want in production):");
         registry.updateCompatibility(SUBJECT, "NONE");
-        log.info("compatibility now {}; register v3 -> {}", compatibility(registry, SUBJECT), tryRegister(registry, SUBJECT, v3));
+        log.info("compatibility now {}; register v3 -> {}", Registry.compatibility(registry, SUBJECT), Registry.tryRegister(registry, SUBJECT, v3));
         registry.updateCompatibility(SUBJECT, "BACKWARD");
-        log.info("restored to {}. A consumer using v3 as reader schema can no longer read v1/v2 records (salesRep has no default).", compatibility(registry, SUBJECT));
+        log.info("restored to {}. A consumer using v3 as reader schema can no longer read v1/v2 records (salesRep has no default).", Registry.compatibility(registry, SUBJECT));
 
         var levels = new Table("level", "who must be upgraded first", "allowed changes (Avro)")
                 .row("BACKWARD (default)", "consumers", "add field WITH default, remove field")
@@ -251,7 +250,8 @@ public final class AvroDemo implements Demo {
 
     // ------------------------------------------------------------------ helpers
 
-    private static Order order(long i) {
+    /** The order the chapter 13 demos produce: record {@code i} of a deterministic stream. */
+    static Order order(long i) {
         return Order.newBuilder()
                 .setOrderId("ORD-" + i)
                 .setCustomerId(Payloads.key(i, 20))
@@ -265,66 +265,5 @@ public final class AvroDemo implements Demo {
         Properties p = Env.producer(clientId);
         p.putAll(AvroClients.producer(Env.schemaRegistryUrl()));
         return args.applyOverrides(p);
-    }
-
-    private static Schema withField(Schema base, String fieldJson) {
-        String json = base.toString();
-        int end = json.lastIndexOf("]}");
-        return new Schema.Parser().parse(json.substring(0, end) + "," + fieldJson + json.substring(end));
-    }
-
-    /** Copy of {@code base} with one field's type replaced (and its default dropped, since it would no longer fit). */
-    private static Schema withFieldType(Schema base, String fieldName, Schema newType) {
-        var fields = new java.util.ArrayList<Schema.Field>();
-        for (Schema.Field f : base.getFields()) {
-            fields.add(f.name().equals(fieldName)
-                    ? new Schema.Field(f.name(), newType, f.doc())
-                    : new Schema.Field(f.name(), f.schema(), f.doc(), f.defaultVal()));
-        }
-        return Schema.createRecord(base.getName(), base.getDoc(), base.getNamespace(), false, fields);
-    }
-
-    private static String tryRegister(SchemaRegistryClient registry, String subject, Schema schema) {
-        try {
-            int id = registry.register(subject, new AvroSchema(schema));
-            return "OK, id " + id + ", version " + registry.getLatestSchemaMetadata(subject).getVersion();
-        } catch (RestClientException e) {
-            // The message embeds the whole previous schema; keep the status and the registry's error type.
-            var m = java.util.regex.Pattern.compile("errorType:'([A-Z_]+)'").matcher(e.getMessage());
-            String why = m.find() ? m.group(1) : firstLine(e.getMessage());
-            return "REJECTED " + e.getStatus() + "/" + e.getErrorCode() + ": " + why;
-        } catch (Exception e) {
-            return "error: " + e.getMessage();
-        }
-    }
-
-    private static String compatibility(SchemaRegistryClient registry, String subject) throws Exception {
-        try {
-            return registry.getCompatibility(subject);
-        } catch (RestClientException e) {
-            return "BACKWARD (inherited from the global default)";
-        }
-    }
-
-    private static void resetSubjects(SchemaRegistryClient registry, String... subjects) {
-        for (String s : subjects) {
-            try {
-                registry.deleteSubject(s);
-                registry.deleteSubject(s, true);
-            } catch (Exception ignored) {
-                // subject did not exist
-            }
-        }
-    }
-
-    private static Throwable rootCause(Throwable t) {
-        while (t.getCause() != null) {
-            t = t.getCause();
-        }
-        return t;
-    }
-
-    private static String firstLine(String s) {
-        return s == null ? "" : s.lines().findFirst().orElse("");
     }
 }
